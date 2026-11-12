@@ -599,6 +599,8 @@ fn main(mut gba: agb::Gba) -> ! {
                 }) {
                     let e = &room.enemies[i];
                     let _ = e;
+                    // Redraw the backdrop each time: room redraws can reuse its VRAM.
+                    draw_combat_bg(&mut arena);
                     clear_ui(&mut ui);
                     draw_panel(&mut ui, 0, 15, 29, 19);
                     title_text = Text::new("TON TOUR", 96, 20);
@@ -694,6 +696,7 @@ fn main(mut gba: agb::Gba) -> ! {
                                         draw_map(&mut background, &room, &floor);
                                         let options = pick_upgrades(&mut rng);
                                         menu = upgrade_menu(&options, 0);
+                                        draw_combat_bg(&mut arena);
                                         clear_ui(&mut ui);
                                         draw_panel(&mut ui, 1, 2, 28, 19);
                                         mode = Mode::Upgrade { options, sel: 0 };
