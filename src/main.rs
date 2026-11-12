@@ -27,7 +27,7 @@ use wfc::{Map, Rng, Terrain};
 
 include_background_gfx!(mod bg, tiles => "gfx/tiles.png");
 // Separate palettes: loaded only while the map is hidden (combat, upgrade menu).
-include_background_gfx!(mod combatbg, combat => 256 deduplicate "gfx/combat_bg.png");
+include_background_gfx!(mod combatbg, combat => deduplicate "gfx/combat_bg.png");
 include_aseprite!(
     mod sprites,
     "gfx/adam_down.gif",
@@ -510,11 +510,11 @@ fn main(mut gba: agb::Gba) -> ! {
         RegularBackgroundSize::Background64x64,
         TileFormat::FourBpp,
     );
-    // Combat backdrop (256 colours).
+    // Combat backdrop.
     let mut arena = RegularBackground::new(
         Priority::P3,
         RegularBackgroundSize::Background32x32,
-        TileFormat::EightBpp,
+        TileFormat::FourBpp,
     );
     draw_combat_bg(&mut arena);
     let mut panel = new_panel();
