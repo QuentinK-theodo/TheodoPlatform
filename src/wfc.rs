@@ -26,7 +26,6 @@ const TERRAINS: [Terrain; N] = [
     Terrain::Box,
     Terrain::Stool,
 ];
-const WEIGHTS: [u32; N] = [12, 5, 5, 2, 2, 2];
 
 const fn bit(t: Terrain) -> u8 {
     1 << t as u8
@@ -112,7 +111,7 @@ fn propagate(wave: &mut [[u8; W]; H], start: (usize, usize)) -> bool {
     true
 }
 
-fn try_generate(rng: &mut Rng) -> Option<Map> {
+fn try_generate(rng: &mut Rng, weights: &[u32; N]) -> Option<Map> {
     let mut wave = [[ALL; W]; H];
     // Border is wall; interior can't be wall-free-floating noise near the edge.
     for y in 0..H {
@@ -157,17 +156,17 @@ fn try_generate(rng: &mut Rng) -> Option<Map> {
 
         let total: u32 = (0..N)
             .filter(|t| wave[y][x] & (1 << t) != 0)
-            .map(|t| WEIGHTS[t])
+            .map(|t| weights[t])
             .sum();
         let mut pick = rng.range(total);
         let mut chosen = 0;
         for t in 0..N {
             if wave[y][x] & (1 << t) != 0 {
-                if pick < WEIGHTS[t] {
+                if pick < weights[t] {
                     chosen = t;
                     break;
                 }
-                pick -= WEIGHTS[t];
+                pick -= weights[t];
             }
         }
         wave[y][x] = 1 << chosen;
@@ -185,9 +184,10 @@ fn try_generate(rng: &mut Rng) -> Option<Map> {
     Some(map)
 }
 
-pub fn generate(rng: &mut Rng) -> Map {
+/// `weights`: relative frequency of floor, carpet, tile, wall, box, stool.
+pub fn generate(rng: &mut Rng, weights: &[u32; 6]) -> Map {
     for _ in 0..20 {
-        if let Some(map) = try_generate(rng) {
+        if let Some(map) = try_generate(rng, weights) {
             return map;
         }
     }
