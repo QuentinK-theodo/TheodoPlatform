@@ -1,5 +1,7 @@
 # Theodo RPG
 
+▶️ **Jouer dans le navigateur : https://quentink-theodo.github.io/TheodoPlatform/**
+
 Démo GBA en Rust ([agb](https://agbrs.dev) 0.25) : un RPG façon Mario & Luigi en version roguelite, avec des salles de bureau générées par **Wave Function Collapse** (`src/wfc.rs`).
 
 - Exploration : les flèches pour bouger. Toucher un ennemi lance le combat.
