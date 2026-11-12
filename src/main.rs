@@ -113,12 +113,6 @@ impl Kind {
             Kind::Alex => &sprites::ALEX_IDLE,
         }
     }
-    fn name(self) -> &'static str {
-        match self {
-            Kind::Bob => "Bob",
-            Kind::Alex => "Alex",
-        }
-    }
 }
 
 struct Enemy {
