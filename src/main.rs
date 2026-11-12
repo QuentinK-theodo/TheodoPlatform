@@ -16,7 +16,7 @@ use agb::{
         GraphicsFrame, Palette16, Priority, Rgb15,
         font::{Font, Layout, LayoutSettings, ObjectTextRenderer},
         object::{Object, Size, Tag},
-        tiled::{RegularBackground, RegularBackgroundSize, TileFormat},
+        tiled::{DynamicTile16, RegularBackground, RegularBackgroundSize, TileEffect, TileFormat},
     },
     fixnum::vec2,
     include_aseprite, include_background_gfx, include_font,
@@ -205,13 +205,48 @@ enum Then {
     Defeat,
 }
 
-const BAR_X: i32 = 70;
-const BAR_W: i32 = 100;
-const SWEET_START: i32 = 42;
-const SWEET_END: i32 = 58;
-const ATTACK_LEN: i32 = 60;
-const DODGE_FROM: i32 = 44;
-const DODGE_TO: i32 = 56;
+const BAR_X: i32 = 72; // multiple of 8: the bar is drawn with 8x8 tiles
+const BAR_Y: i32 = 104;
+const BAR_W: i32 = 104;
+const SWEET_START: i32 = 44;
+const SWEET_END: i32 = 60;
+const CURSOR_SPEED: i32 = 2;
+const ATTACK_LEN: i32 = 80;
+/// The "!" signal shows during this window: press A to dodge.
+const DODGE_FROM: i32 = 56;
+const DODGE_TO: i32 = 72;
+const BAR_PALETTE: u8 = 15;
+const AIM_HELP: &str = "Appuie sur A quand le curseur blanc\nest dans la zone VERTE : degats x2 !";
+const DODGE_HELP: &str = "Il fonce sur toi ! Appuie sur A\nquand \"!!\" apparait pour esquiver.";
+
+/// Draw the timing bar (grey track, green sweet spot, white cursor) on its own background.
+fn draw_bar(bar: &mut RegularBackground, cursor: i32) {
+    for tx in 0..BAR_W / 8 {
+        let mut tile = DynamicTile16::new();
+        for (row, line) in tile.data_mut().iter_mut().enumerate() {
+            let mut v = 0u32;
+            for px in 0..8 {
+                let x = tx * 8 + px;
+                let c = if row == 0 || row == 7 {
+                    1 // dark border
+                } else if (cursor - 1..=cursor + 1).contains(&x) {
+                    4 // cursor
+                } else if (SWEET_START..=SWEET_END).contains(&x) {
+                    3 // green sweet spot
+                } else {
+                    2 // grey track
+                };
+                v |= c << (px * 4);
+            }
+            *line = v;
+        }
+        bar.set_tile_dynamic16(
+            ((BAR_X / 8) + tx, BAR_Y / 8),
+            &tile,
+            TileEffect::new(false, false, BAR_PALETTE),
+        );
+    }
+}
 
 // --- Game -----------------------------------------------------------------
 
@@ -225,18 +260,26 @@ fn main(mut gba: agb::Gba) -> ! {
     let mut gfx = gba.graphics.get();
     let mut input = ButtonController::new();
     gfx.set_background_palettes(bg::PALETTES);
+    for (i, c) in [0x0000u16, 0x1084, 0x4210, 0x03E0, 0x7FFF].into_iter().enumerate() {
+        gfx.set_background_palette_colour(BAR_PALETTE as usize, i, Rgb15::new(c));
+    }
 
     let mut background = RegularBackground::new(
         Priority::P3,
         RegularBackgroundSize::Background32x32,
         TileFormat::FourBpp,
     );
+    let mut bar = RegularBackground::new(
+        Priority::P1,
+        RegularBackgroundSize::Background32x32,
+        TileFormat::FourBpp,
+    );
 
     // Title screen: seed comes from how long the player waits.
     let title = Text::new(
-        "THEODO RPG\n\nUn RPG roguelite dans les bureaux.\nCombat au tour par tour, A au bon moment !\n\nAppuie sur START",
-        12,
-        30,
+        "THEODO RPG\n\nBouge avec les fleches. Touche un collegue pour combattre.\n\nTON TOUR : appuie sur A quand le curseur blanc est dans la zone VERTE (degats x2).\n\nSON TOUR : appuie sur A quand le \"!\" apparait pour esquiver.\n\nSTART pour jouer",
+        8,
+        8,
     );
     let mut seed: u32 = 1;
     loop {
@@ -263,8 +306,8 @@ fn main(mut gba: agb::Gba) -> ! {
     let mut hud = Text::new(&format!("Salle {depth}   PV {hero_hp}/{HERO_MAX_HP}"), 4, 0);
     let mut hud_dirty = false;
     let mut combat_text: Option<Text> = None;
-    let cursor_text = Text::new("v", 0, 0);
-    let bar_text = Text::new("[==========]", BAR_X - 4, 104);
+    let alert = Text::new("!!", 62, 40);
+    let mut title_text = Text::new("", 0, 0);
 
     loop {
         frame_count = frame_count.wrapping_add(1);
@@ -297,11 +340,9 @@ fn main(mut gba: agb::Gba) -> ! {
                     (e.x - room.hero.0).abs() < 14 && (e.y - room.hero.1).abs() < 14
                 }) {
                     let e = &room.enemies[i];
-                    combat_text = Some(Text::new(
-                        &format!("{} attaque ! A pour frapper au bon moment.", e.kind.name()),
-                        4,
-                        130,
-                    ));
+                    let _ = e;
+                    title_text = Text::new("TON TOUR", 96, 20);
+                    combat_text = Some(Text::new(AIM_HELP, 4, 124));
                     mode = Mode::Combat {
                         enemy: i,
                         phase: Phase::Aim { cursor: 0 },
@@ -314,15 +355,15 @@ fn main(mut gba: agb::Gba) -> ! {
                 let mut next: Option<Phase> = None;
                 match phase {
                     Phase::Aim { cursor } => {
-                        *cursor += 3;
+                        *cursor += CURSOR_SPEED;
                         let pressed = input.is_just_pressed(Button::A);
                         if pressed || *cursor >= BAR_W {
                             let (dmg, msg) = if pressed && (SWEET_START..=SWEET_END).contains(cursor) {
-                                (8, "EXCELLENT ! 8 degats")
+                                (8, "PARFAIT ! Dans le vert : 8 degats")
                             } else if pressed {
-                                (4, "Touche. 4 degats")
+                                (4, "A cote du vert : 4 degats")
                             } else {
-                                (2, "Trop lent... 2 degats")
+                                (2, "Pas appuye a temps : 2 degats")
                             };
                             e.hp -= dmg;
                             next = Some(Phase::Message {
@@ -343,9 +384,11 @@ fn main(mut gba: agb::Gba) -> ! {
                             hero_hp -= dmg;
                             next = Some(Phase::Message {
                                 text: if dodged {
-                                    "ESQUIVE !".into()
+                                    "ESQUIVE ! Aucun degat".into()
+                                } else if pressed.is_some() {
+                                    format!("Mauvais timing ! -{dmg} PV")
                                 } else {
-                                    format!("Aie ! -{dmg} PV")
+                                    format!("Pas d'esquive ! -{dmg} PV")
                                 },
                                 timer: 50,
                                 then: if hero_hp <= 0 { Then::Defeat } else { Then::PlayerTurn },
@@ -357,12 +400,16 @@ fn main(mut gba: agb::Gba) -> ! {
                         if *timer <= 0 {
                             match *then {
                                 Then::EnemyTurn => {
-                                    next = Some(Phase::EnemyAttack { t: 0, pressed: None });
-                                    combat_text = Some(Text::new("A au moment de l'impact pour esquiver !", 4, 130));
+                                    title_text = Text::new("SON TOUR", 96, 20);
+                                    combat_text = Some(Text::new(DODGE_HELP, 4, 124));
+                                    *phase = Phase::EnemyAttack { t: 0, pressed: None };
+                                    hud_dirty = true;
                                 }
                                 Then::PlayerTurn => {
-                                    next = Some(Phase::Aim { cursor: 0 });
-                                    combat_text = Some(Text::new("A dans la zone centrale !", 4, 130));
+                                    title_text = Text::new("TON TOUR", 96, 20);
+                                    combat_text = Some(Text::new(AIM_HELP, 4, 124));
+                                    *phase = Phase::Aim { cursor: 0 };
+                                    hud_dirty = true;
                                 }
                                 Then::Victory => {
                                     room.enemies.swap_remove(*enemy);
@@ -396,7 +443,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 }
                 if let Some(p) = next {
                     if let Phase::Message { text, .. } = &p {
-                        combat_text = Some(Text::new(text, 4, 130));
+                        combat_text = Some(Text::new(text, 4, 124));
                     }
                     *phase = p;
                     hud_dirty = true;
@@ -433,22 +480,28 @@ fn main(mut gba: agb::Gba) -> ! {
                 let mut h = Object::new(sprites::ADAM_IDLE.animation_sprite(frame_count / 8));
                 h.set_pos((60, 60));
                 h.show(&mut frame);
+                // The enemy charges and reaches the hero in the middle of the dodge window.
+                let impact = (DODGE_FROM + DODGE_TO) / 2;
                 let ex = match phase {
-                    Phase::EnemyAttack { t, .. } => 160 - (100 * *t / ATTACK_LEN).min(84),
+                    Phase::EnemyAttack { t, .. } => 160 - 84 * (*t).min(impact) / impact,
                     _ => 160,
                 };
                 let mut o = Object::new(e.kind.tag().animation_sprite(frame_count / 8));
                 o.set_pos((ex, 60));
                 o.set_hflip(true);
                 o.show(&mut frame);
-                if let Phase::Aim { cursor } = phase {
-                    let mut c = Text::new("v", 0, 0);
-                    for obj in c.objects.iter_mut() {
-                        obj.set_pos((BAR_X + *cursor - 2, 90));
+                if !matches!(phase, Phase::Message { .. }) {
+                    title_text.show(&mut frame);
+                }
+                match phase {
+                    Phase::Aim { cursor } => {
+                        draw_bar(&mut bar, *cursor);
+                        bar.show(&mut frame);
                     }
-                    c.show(&mut frame);
-                    bar_text.show(&mut frame);
-                    let _ = &cursor_text;
+                    Phase::EnemyAttack { t, .. } if (DODGE_FROM..=DODGE_TO).contains(t) => {
+                        alert.show(&mut frame);
+                    }
+                    _ => {}
                 }
                 if let Some(t) = &combat_text {
                     t.show(&mut frame);
