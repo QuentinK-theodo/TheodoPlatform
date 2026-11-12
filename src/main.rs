@@ -386,7 +386,14 @@ static UPGRADE_ICONS: [&Tag; 8] = [
 ];
 
 const MENU_Y0: i32 = 48;
-const MENU_STEP: i32 = 30;
+const MENU_STEP: i32 = 32; // multiple of 8 so the highlight box aligns with tiles
+
+/// Menu panel with the selected option highlighted (lighter fill, white border).
+fn draw_upgrade_panel(ui: &mut RegularBackground, sel: usize) {
+    draw_panel(ui, 1, 2, 28, 19);
+    let top = (MENU_Y0 - 6 + sel as i32 * MENU_STEP) / 8;
+    draw_box(ui, 2, top, 27, top + 3, 2, 4);
+}
 
 fn apply_upgrade(i: usize, stats: &mut Stats, hp: &mut i32) {
     match i {
@@ -428,14 +435,18 @@ fn upgrade_menu(options: &[usize; 3], sel: usize) -> Text {
 
 /// Dark rounded-ish panel (generated, no asset): fills tile rect [x0,x1]x[y0,y1].
 fn draw_panel(panel: &mut RegularBackground, x0: i32, y0: i32, x1: i32, y1: i32) {
-    // 9-slice: border colour 2, fill colour 1 (bar palette).
+    draw_box(panel, x0, y0, x1, y1, 1, 2);
+}
+
+/// 9-slice box with the given fill / border colours (bar palette indices).
+fn draw_box(panel: &mut RegularBackground, x0: i32, y0: i32, x1: i32, y1: i32, fill: u32, border: u32) {
     let make = |top: bool, bottom: bool, left: bool, right: bool| {
         let mut tile = DynamicTile16::new();
         for (row, line) in tile.data_mut().iter_mut().enumerate() {
             let mut v = 0u32;
             for px in 0..8u32 {
                 let edge = (top && row == 0) || (bottom && row == 7) || (left && px == 0) || (right && px == 7);
-                v |= if edge { 2 } else { 1 } << (px * 4);
+                v |= if edge { border } else { fill } << (px * 4);
             }
             *line = v;
         }
@@ -698,7 +709,7 @@ fn main(mut gba: agb::Gba) -> ! {
                                         menu = upgrade_menu(&options, 0);
                                         draw_combat_bg(&mut arena);
                                         clear_ui(&mut ui);
-                                        draw_panel(&mut ui, 1, 2, 28, 19);
+                                        draw_upgrade_panel(&mut ui, 0);
                                         mode = Mode::Upgrade { options, sel: 0 };
                                     } else {
                                         mode = Mode::Explore;
@@ -742,6 +753,7 @@ fn main(mut gba: agb::Gba) -> ! {
             }
             if *sel != old {
                 menu = upgrade_menu(options, *sel);
+                draw_upgrade_panel(&mut ui, *sel);
             }
             if input.is_just_pressed(Button::A) {
                 apply_upgrade(options[*sel], &mut stats, &mut hero_hp);
