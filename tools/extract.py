@@ -88,4 +88,11 @@ for who in ["Adam", "Bob", "Alex"]:
     anims[OUT / f"{who.lower()}_idle.gif"] = [crop(idle, (18 + i) * 16, 0, 16, 32) for i in range(6)]
     save_gifs(anims)
 
+# UI icons from the items/ pack (16x16 each), one palette per icon.
+ITEMS = ROOT / "items"
+ICONS = {"heart": 688, "cafe": 810, "focus": 1170, "reflexes": 197, "costard": 222,
+         "dej": 402, "genie": 611, "counter": 275, "afterwork": 902}
+for name, idx in ICONS.items():
+    quantize(Image.open(ITEMS / f"item{idx}.png").convert("RGBA")).save(OUT / f"icon_{name}.png")
+
 print("ok:", sorted(p.name for p in OUT.iterdir()))

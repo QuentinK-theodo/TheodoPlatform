@@ -34,7 +34,16 @@ include_aseprite!(
     "gfx/adam_right.gif",
     "gfx/adam_idle.gif",
     "gfx/bob_idle.gif",
-    "gfx/alex_idle.gif"
+    "gfx/alex_idle.gif",
+    "gfx/icon_heart.png",
+    "gfx/icon_cafe.png",
+    "gfx/icon_focus.png",
+    "gfx/icon_reflexes.png",
+    "gfx/icon_costard.png",
+    "gfx/icon_dej.png",
+    "gfx/icon_genie.png",
+    "gfx/icon_counter.png",
+    "gfx/icon_afterwork.png"
 );
 
 static FONT: Font = include_font!("fonts/ark-pixel-10px-proportional-ja.ttf", 10);
@@ -385,6 +394,20 @@ const UPGRADES: [(&str, &str); 8] = [
     ("Afterwork", "+1 PV par coup porte"),
 ];
 
+static UPGRADE_ICONS: [&Tag; 8] = [
+    &sprites::ICON_CAFE,
+    &sprites::ICON_FOCUS,
+    &sprites::ICON_REFLEXES,
+    &sprites::ICON_COSTARD,
+    &sprites::ICON_DEJ,
+    &sprites::ICON_GENIE,
+    &sprites::ICON_COUNTER,
+    &sprites::ICON_AFTERWORK,
+];
+
+const MENU_Y0: i32 = 48;
+const MENU_STEP: i32 = 30;
+
 fn apply_upgrade(i: usize, stats: &mut Stats, hp: &mut i32) {
     match i {
         0 => stats.atk += 1,
@@ -411,13 +434,49 @@ fn pick_upgrades(rng: &mut Rng) -> [usize; 3] {
 }
 
 fn upgrade_menu(options: &[usize; 3], sel: usize) -> Text {
-    let mut s = String::from("SALLE TERMINEE ! Choisis une competence :\n\n");
+    let mut menu = Text::new("SALLE TERMINEE ! Choisis une competence :", 16, 22);
     for (i, &u) in options.iter().enumerate() {
         let (name, desc) = UPGRADES[u];
-        s += &format!("{} {name} : {desc}\n\n", if i == sel { ">" } else { "  " });
+        let y = MENU_Y0 + i as i32 * MENU_STEP;
+        let marker = if i == sel { ">" } else { "" };
+        menu.objects.extend(Text::new(marker, 14, y).objects);
+        menu.objects.extend(Text::new(&format!("{name}\n{desc}"), 50, y - 4).objects);
     }
-    s += "Haut/Bas puis A";
-    Text::new(&s, 8, 24)
+    menu.objects.extend(Text::new("Haut/Bas pour choisir, A pour valider", 16, 140).objects);
+    menu
+}
+
+/// Dark rounded-ish panel (generated, no asset): fills tile rect [x0,x1]x[y0,y1].
+fn draw_panel(panel: &mut RegularBackground, x0: i32, y0: i32, x1: i32, y1: i32) {
+    // 9-slice: border colour 2, fill colour 1 (bar palette).
+    let make = |top: bool, bottom: bool, left: bool, right: bool| {
+        let mut tile = DynamicTile16::new();
+        for (row, line) in tile.data_mut().iter_mut().enumerate() {
+            let mut v = 0u32;
+            for px in 0..8u32 {
+                let edge = (top && row == 0) || (bottom && row == 7) || (left && px == 0) || (right && px == 7);
+                v |= if edge { 2 } else { 1 } << (px * 4);
+            }
+            *line = v;
+        }
+        tile
+    };
+    let mut tiles: Vec<DynamicTile16> = Vec::new();
+    for i in 0..9 {
+        let (r, c) = (i / 3, i % 3);
+        tiles.push(make(r == 0, r == 2, c == 0, c == 2));
+    }
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let r = if y == y0 { 0 } else if y == y1 { 2 } else { 1 };
+            let c = if x == x0 { 0 } else if x == x1 { 2 } else { 1 };
+            panel.set_tile_dynamic16((x, y), &tiles[r * 3 + c], TileEffect::new(false, false, BAR_PALETTE));
+        }
+    }
+}
+
+fn new_panel() -> RegularBackground {
+    RegularBackground::new(Priority::P2, RegularBackgroundSize::Background32x32, TileFormat::FourBpp)
 }
 
 // --- Game -----------------------------------------------------------------
@@ -449,6 +508,7 @@ fn main(mut gba: agb::Gba) -> ! {
         RegularBackgroundSize::Background32x32,
         TileFormat::FourBpp,
     );
+    let mut panel = new_panel();
     let mut bar = RegularBackground::new(
         Priority::P1,
         RegularBackgroundSize::Background32x32,
@@ -486,9 +546,11 @@ fn main(mut gba: agb::Gba) -> ! {
     let mut mode = Mode::Explore;
     let mut frame_count: usize = 0;
     let mut hud = Text::new(&format!("Salle {depth}   PV {hero_hp}/{HERO_MAX_HP}"), 4, 0);
-    let mut hud_dirty = false;
+    let mut hud_dirty = true;
     let mut combat_text: Option<Text> = None;
     let alert = Text::new("!!", 62, 40);
+    let mut heart = Object::new(sprites::ICON_HEART.sprite(0));
+    heart.set_pos((2, -2));
     let mut title_text = Text::new("", 0, 0);
 
     loop {
@@ -538,8 +600,10 @@ fn main(mut gba: agb::Gba) -> ! {
                     let e = &room.enemies[i];
                     let _ = e;
                     fill_arena(&mut arena, room.kind.floor_tile());
+                    panel = new_panel();
+                    draw_panel(&mut panel, 0, 15, 29, 19);
                     title_text = Text::new("TON TOUR", 96, 20);
-                    combat_text = Some(Text::new(AIM_HELP, 4, 124));
+                    combat_text = Some(Text::new(AIM_HELP, 8, 126));
                     mode = Mode::Combat {
                         enemy: i,
                         phase: Phase::Aim { cursor: 0 },
@@ -612,13 +676,13 @@ fn main(mut gba: agb::Gba) -> ! {
                             match *then {
                                 Then::EnemyTurn => {
                                     title_text = Text::new("SON TOUR", 96, 20);
-                                    combat_text = Some(Text::new(DODGE_HELP, 4, 124));
+                                    combat_text = Some(Text::new(DODGE_HELP, 8, 126));
                                     *phase = Phase::EnemyAttack { t: 0, pressed: None };
                                     hud_dirty = true;
                                 }
                                 Then::PlayerTurn => {
                                     title_text = Text::new("TON TOUR", 96, 20);
-                                    combat_text = Some(Text::new(AIM_HELP, 4, 124));
+                                    combat_text = Some(Text::new(AIM_HELP, 8, 126));
                                     *phase = Phase::Aim { cursor: 0 };
                                     hud_dirty = true;
                                 }
@@ -630,6 +694,8 @@ fn main(mut gba: agb::Gba) -> ! {
                                         draw_map(&mut background, &room);
                                         let options = pick_upgrades(&mut rng);
                                         menu = upgrade_menu(&options, 0);
+                                        panel = new_panel();
+                                        draw_panel(&mut panel, 1, 2, 28, 19);
                                         mode = Mode::Upgrade { options, sel: 0 };
                                     } else {
                                         mode = Mode::Explore;
@@ -657,7 +723,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 }
                 if let Some(p) = next {
                     if let Phase::Message { text, .. } = &p {
-                        combat_text = Some(Text::new(text, 4, 124));
+                        combat_text = Some(Text::new(text, 8, 126));
                     }
                     *phase = p;
                     hud_dirty = true;
@@ -695,14 +761,15 @@ fn main(mut gba: agb::Gba) -> ! {
                 Mode::Explore => format!("   Ennemis {}", room.enemies.len()),
             };
             hud = Text::new(
-                &format!("{} {depth}  PV {}/{}{extra}", room.kind.name(), hero_hp.max(0), stats.max_hp),
-                4,
+                &format!("{}/{}   {} {depth}{extra}", hero_hp.max(0), stats.max_hp, room.kind.name()),
+                20,
                 0,
             );
         }
 
         let mut frame = gfx.frame();
         hud.show(&mut frame);
+        heart.show(&mut frame);
         match &mode {
             Mode::Explore => {
                 hero.show(&mut frame);
@@ -719,12 +786,19 @@ fn main(mut gba: agb::Gba) -> ! {
                 background.set_scroll_pos(cam);
                 background.show(&mut frame);
             }
-            Mode::Upgrade { .. } => {
+            Mode::Upgrade { options, .. } => {
                 arena.show(&mut frame);
+                panel.show(&mut frame);
                 menu.show(&mut frame);
+                for (i, &u) in options.iter().enumerate() {
+                    let mut o = Object::new(UPGRADE_ICONS[u].sprite(0));
+                    o.set_pos((28, MENU_Y0 - 2 + i as i32 * MENU_STEP));
+                    o.show(&mut frame);
+                }
             }
             Mode::Combat { enemy, phase } => {
                 arena.show(&mut frame);
+                panel.show(&mut frame);
                 let e = &room.enemies[*enemy];
                 let mut h = Object::new(sprites::ADAM_IDLE.animation_sprite(frame_count / 8));
                 h.set_pos((60, 60));
