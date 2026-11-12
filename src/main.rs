@@ -171,8 +171,8 @@ fn new_room(rng: &mut Rng, depth: i32) -> Room {
         .filter(|&(x, y)| !map[y][x].blocks())
         .collect();
     let start = if walkable.is_empty() {
-        map[5][7] = Terrain::Floor;
-        (7, 5)
+        map[wfc::H / 2][wfc::W / 2] = Terrain::Floor;
+        (wfc::W / 2, wfc::H / 2)
     } else {
         walkable[rng.range(walkable.len() as u32) as usize]
     };
@@ -251,6 +251,16 @@ fn draw_map(background: &mut RegularBackground, room: &Room) {
             }
         }
     }
+}
+
+/// Camera top-left: centred on the hero, clamped to the room.
+fn camera(room: &Room) -> (i32, i32) {
+    let max_x = wfc::W as i32 * 16 - agb::display::WIDTH;
+    let max_y = wfc::H as i32 * 16 - agb::display::HEIGHT;
+    (
+        (room.hero.0 + 8 - agb::display::WIDTH / 2).clamp(0, max_x),
+        (room.hero.1 + 16 - agb::display::HEIGHT / 2).clamp(0, max_y),
+    )
 }
 
 fn blocked(map: &Map, px: i32, py: i32) -> bool {
@@ -344,9 +354,10 @@ fn main(mut gba: agb::Gba) -> ! {
         gfx.set_background_palette_colour(BAR_PALETTE as usize, i, Rgb15::new(c));
     }
 
+    // 64x64 tiles = 512x512 px: enough for a 30x20 room of 16x16 cells.
     let mut background = RegularBackground::new(
         Priority::P3,
-        RegularBackgroundSize::Background32x32,
+        RegularBackgroundSize::Background64x64,
         TileFormat::FourBpp,
     );
     let mut bar = RegularBackground::new(
@@ -426,7 +437,8 @@ fn main(mut gba: agb::Gba) -> ! {
                     draw_map(&mut background, &room);
                     hud_dirty = true;
                 }
-                hero.set_pos((room.hero.0, room.hero.1));
+                let cam = camera(&room);
+                hero.set_pos((room.hero.0 - cam.0, room.hero.1 - cam.1));
 
                 if let Some(i) = room.enemies.iter().position(|e| {
                     (e.x - room.hero.0).abs() < 14 && (e.y - room.hero.1).abs() < 14
@@ -563,11 +575,17 @@ fn main(mut gba: agb::Gba) -> ! {
         match &mode {
             Mode::Explore => {
                 hero.show(&mut frame);
+                let cam = camera(&room);
                 for e in &room.enemies {
+                    let (sx, sy) = (e.x - cam.0, e.y - cam.1);
+                    if !(-16..agb::display::WIDTH).contains(&sx) || !(-32..agb::display::HEIGHT).contains(&sy) {
+                        continue;
+                    }
                     let mut o = Object::new(e.kind.tag().animation_sprite(frame_count / 8));
-                    o.set_pos((e.x, e.y));
+                    o.set_pos((sx, sy));
                     o.show(&mut frame);
                 }
+                background.set_scroll_pos(cam);
                 background.show(&mut frame);
             }
             Mode::Combat { enemy, phase } => {

@@ -2,8 +2,8 @@
 
 use alloc::vec::Vec;
 
-pub const W: usize = 15;
-pub const H: usize = 10;
+pub const W: usize = 30;
+pub const H: usize = 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]

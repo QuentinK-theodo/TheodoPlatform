@@ -9,13 +9,22 @@
     h1 { font-size: 1.4rem; margin: 16px; }
     #game { width: min(720px, 100vw); height: min(480px, 66vw); margin: 0 auto; }
     p { font-size: .9rem; color: #aaa; padding: 0 16px; }
+    .controls { margin: 16px auto; border-collapse: collapse; font-size: .95rem; }
+    .controls td { padding: 4px 12px; border-bottom: 1px solid #333; text-align: left; }
+    kbd { background: #2a2a2a; border: 1px solid #555; border-bottom-width: 3px; border-radius: 4px; padding: 1px 7px; font-family: ui-monospace, monospace; color: #fff; }
   </style>
 </head>
 <body>
   <h1>Theodo RPG — démo GBA en Rust (agb)</h1>
   <div id="game"></div>
-  <p>Flèches : bouger · A (touche X) : frapper / esquiver au bon moment · Entrée : START.<br>
-     Salles générées par Wave Function Collapse. Assets : LimeZu (Modern Interiors, free).</p>
+  <table class="controls" aria-label="Contrôles clavier">
+    <tr><td><kbd>←</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>→</kbd></td><td>Se déplacer</td></tr>
+    <tr><td><kbd>Z</kbd> (bouton A)</td><td>Combat : frapper quand le curseur est dans le vert · esquiver quand « !! » apparaît</td></tr>
+    <tr><td><kbd>Entrée</kbd> (START)</td><td>Commencer la partie</td></tr>
+  </table>
+  <p>Bats tous les collègues de la pièce, puis passe la porte du haut pour la pièce suivante.<br>
+     Pièces générées par Wave Function Collapse. Assets : LimeZu (Modern Interiors, free).<br>
+     Clique sur le jeu si le clavier ne répond pas.</p>
   <script>
     EJS_player = "#game";
     EJS_core = "gba";
