@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+mod dungeon;
 mod wfc;
 
 use alloc::{format, string::String, vec::Vec};
@@ -23,6 +24,7 @@ use agb::{
     input::{Button, ButtonController},
 };
 
+use dungeon::{BuiltRoom, Floor};
 use wfc::{Map, Rng, Terrain};
 
 include_background_gfx!(mod bg, tiles => "gfx/tiles.png");
@@ -46,7 +48,11 @@ include_aseprite!(
     "gfx/icon_genie.png",
     "gfx/icon_counter.png",
     "gfx/icon_afterwork.png",
-    "gfx/shadow.png"
+    "gfx/shadow.png",
+    "gfx/mm_room.png",
+    "gfx/mm_current.png",
+    "gfx/mm_exit.png",
+    "gfx/mm_unknown.png"
 );
 
 static FONT: Font = include_font!("fonts/ark-pixel-10px-proportional-ja.ttf", 10);
@@ -116,140 +122,87 @@ struct Enemy {
     hp: i32,
 }
 
-#[derive(Clone, Copy)]
-enum RoomKind {
-    OpenSpace,
-    Cuisine,
-    Archives,
-}
-
-impl RoomKind {
-    fn random(rng: &mut Rng) -> Self {
-        match rng.range(3) {
-            0 => RoomKind::OpenSpace,
-            1 => RoomKind::Cuisine,
-            _ => RoomKind::Archives,
-        }
-    }
-    fn name(self) -> &'static str {
-        match self {
-            RoomKind::OpenSpace => "Open space",
-            RoomKind::Cuisine => "Cuisine",
-            RoomKind::Archives => "Archives",
-        }
-    }
-    /// WFC weights: floor, carpet, tile, wall, box, stool.
-    fn weights(self) -> [u32; 6] {
-        match self {
-            RoomKind::OpenSpace => [12, 9, 1, 1, 1, 5],
-            RoomKind::Cuisine => [12, 1, 9, 1, 4, 2],
-            RoomKind::Archives => [10, 1, 2, 4, 8, 1],
-        }
-    }
-    /// Index in gfx/tiles.png of this room's floor.
-    fn floor_tile(self) -> usize {
-        match self {
-            RoomKind::OpenSpace => 0,
-            RoomKind::Cuisine => 8,
-            RoomKind::Archives => 9,
-        }
-    }
-}
-
 const TILE_DOOR_CLOSED: usize = 6;
 const TILE_DOOR_OPEN: usize = 7;
 const TILES_PER_ROW: usize = 20; // 8x8 tiles per row in gfx/tiles.png
 
+/// The room the hero is currently in.
 struct Room {
-    kind: RoomKind,
-    map: Map,
+    idx: usize,
+    built: BuiltRoom,
     enemies: Vec<Enemy>,
     hero: (i32, i32),
-    /// Column of the door in the top wall.
-    door_x: usize,
 }
 
 impl Room {
     fn door_open(&self) -> bool {
         self.enemies.is_empty()
     }
+    fn map(&self) -> &Map {
+        &self.built.map
+    }
+    fn template(&self, floor: &Floor) -> &'static dungeon::Template {
+        &dungeon::TEMPLATES[floor.rooms[self.idx].template]
+    }
+    fn door_at(&self, cx: i32, cy: i32) -> Option<usize> {
+        (0..4).find(|&d| self.built.doors[d] == Some((cx as usize, cy as usize)))
+    }
 }
 
-fn new_room(rng: &mut Rng, depth: i32) -> Room {
-    let kind = RoomKind::random(rng);
-    let mut map = wfc::generate(rng, &kind.weights());
-    let walkable: Vec<(usize, usize)> = (0..wfc::H)
-        .flat_map(|y| (0..wfc::W).map(move |x| (x, y)))
-        .filter(|&(x, y)| !map[y][x].blocks())
-        .collect();
-    let start = if walkable.is_empty() {
-        map[wfc::H / 2][wfc::W / 2] = Terrain::Floor;
-        (wfc::W / 2, wfc::H / 2)
-    } else {
-        walkable[rng.range(walkable.len() as u32) as usize]
-    };
-    // Guarantee a path from the hero up to row 1, where the door is.
-    if (1..=start.1).any(|y| map[y][start.0].blocks()) {
-        for y in 1..=start.1 {
-            map[y][start.0] = Terrain::Floor;
-        }
-    }
-    let mut reachable = wfc::make_connected(&mut map, start);
+fn cell_to_pos((x, y): (usize, usize)) -> (i32, i32) {
+    (x as i32 * 16, y as i32 * 16 - 16)
+}
 
-    let below_door: Vec<usize> = reachable
-        .iter()
-        .filter(|&&(x, y)| y == 1 && x > 0 && x < wfc::W - 1)
-        .map(|&(x, _)| x)
-        .collect();
-    let door_x = if below_door.is_empty() {
-        start.0
-    } else {
-        below_door[rng.range(below_door.len() as u32) as usize]
+/// Enter room `idx`. `came_from` is the direction we travelled (so we appear
+/// at the opposite door); `None` puts the hero in the centre.
+fn enter_room(floor: &mut Floor, idx: usize, came_from: Option<usize>, level: i32, rng: &mut Rng) -> Room {
+    let built = dungeon::build_room(floor, idx);
+    let slot = &mut floor.rooms[idx];
+    slot.visited = true;
+    let start = match came_from {
+        Some(d) => built.inside((d + 2) % 4),
+        None => (built.map.w / 2, built.map.h / 2),
     };
 
-    // Spawn enemies away from the hero.
-    let far: Vec<(usize, usize)> = reachable
-        .iter()
-        .copied()
-        .filter(|&(x, y)| x.abs_diff(start.0) + y.abs_diff(start.1) >= 4)
-        .collect();
-    if far.len() >= 3 {
-        reachable = far;
-    }
     let mut enemies = Vec::new();
-    let count = 2 + (depth.min(4) as u32 + 1) / 2;
-    for i in 0..count {
-        if reachable.len() <= 1 {
-            break;
+    if !slot.cleared {
+        let boss = idx == floor.exit;
+        let mut spots: Vec<(usize, usize)> = built
+            .spawns
+            .iter()
+            .copied()
+            .filter(|&(x, y)| x.abs_diff(start.0) + y.abs_diff(start.1) >= 4)
+            .collect();
+        let wanted = if boss { 4 } else { (2 + level as usize / 2).min(4) };
+        while enemies.len() < wanted && !spots.is_empty() {
+            let (x, y) = spots.swap_remove(rng.range(spots.len() as u32) as usize);
+            let (ex, ey) = cell_to_pos((x, y));
+            enemies.push(Enemy {
+                kind: if rng.range(2) == 0 { Kind::Bob } else { Kind::Alex },
+                x: ex,
+                y: ey,
+                hp: 6 + level * 2 + rng.range(5) as i32 + if boss { 4 } else { 0 },
+            });
         }
-        let idx = 1 + rng.range(reachable.len() as u32 - 1) as usize;
-        let (x, y) = reachable.swap_remove(idx);
-        enemies.push(Enemy {
-            kind: if i % 2 == 0 { Kind::Bob } else { Kind::Alex },
-            x: x as i32 * 16,
-            y: y as i32 * 16 - 16,
-            hp: 6 + depth * 2 + rng.range(5) as i32,
-        });
+        if enemies.is_empty() {
+            slot.cleared = true;
+        }
     }
 
-    Room {
-        kind,
-        map,
-        enemies,
-        hero: (start.0 as i32 * 16, start.1 as i32 * 16 - 16),
-        door_x,
-    }
+    Room { idx, built, enemies, hero: cell_to_pos(start) }
 }
 
-fn draw_map(background: &mut RegularBackground, room: &Room) {
-    for y in 0..wfc::H {
-        for x in 0..wfc::W {
-            let t = if y == 0 && x == room.door_x {
+fn draw_map(background: &mut RegularBackground, room: &Room, floor: &Floor) {
+    let map = room.map();
+    let floor_tile = room.template(floor).floor_tile;
+    for y in 0..map.h {
+        for x in 0..map.w {
+            let t = if room.door_at(x as i32, y as i32).is_some() {
                 if room.door_open() { TILE_DOOR_OPEN } else { TILE_DOOR_CLOSED }
-            } else if room.map[y][x] == Terrain::Floor {
-                room.kind.floor_tile()
+            } else if map.at(x, y) == Terrain::Floor {
+                floor_tile
             } else {
-                room.map[y][x] as usize
+                map.at(x, y) as usize
             };
             for dy in 0..2 {
                 for dx in 0..2 {
@@ -283,26 +236,41 @@ fn show_shadow(frame: &mut GraphicsFrame, x: i32) {
 
 /// Camera top-left: centred on the hero, clamped to the room.
 fn camera(room: &Room) -> (i32, i32) {
-    let max_x = wfc::W as i32 * 16 - agb::display::WIDTH;
-    let max_y = wfc::H as i32 * 16 - agb::display::HEIGHT;
+    let max_x = (room.map().w as i32 * 16 - agb::display::WIDTH).max(0);
+    let max_y = (room.map().h as i32 * 16 - agb::display::HEIGHT).max(0);
     (
         (room.hero.0 + 8 - agb::display::WIDTH / 2).clamp(0, max_x),
         (room.hero.1 + 16 - agb::display::HEIGHT / 2).clamp(0, max_y),
     )
 }
 
-fn blocked(map: &Map, px: i32, py: i32) -> bool {
+/// Feet cell of the hero sprite at (px, py).
+fn feet_cell(px: i32, py: i32) -> (i32, i32) {
+    ((px + 8) / 16, (py + 28) / 16)
+}
+
+fn blocked(room: &Room, px: i32, py: i32) -> bool {
+    let map = room.map();
     // Feet hitbox: 10x6 at the bottom of the 16x32 sprite.
     for (fx, fy) in [(3, 26), (12, 26), (3, 31), (12, 31)] {
-        let (cx, cy) = ((px + fx) / 16, (py + fy) / 16);
-        if cx < 0 || cy < 0 || cx >= wfc::W as i32 || cy >= wfc::H as i32 {
+        let (cx, cy) = ((px + fx).div_euclid(16), (py + fy).div_euclid(16));
+        if cx < 0 || cy < 0 || cx >= map.w as i32 || cy >= map.h as i32 {
             return true;
         }
-        if map[cy as usize][cx as usize].blocks() {
+        if room.door_at(cx, cy).is_some() {
+            if !room.door_open() {
+                return true;
+            }
+        } else if map.at(cx as usize, cy as usize).blocks() {
             return true;
         }
     }
     false
+}
+
+/// Floor size grows a little with depth.
+fn rooms_for_level(level: i32) -> usize {
+    (6 + level as usize).min(9)
 }
 
 // --- Combat ---------------------------------------------------------------
@@ -549,7 +517,7 @@ fn main(mut gba: agb::Gba) -> ! {
 
     // Title screen: seed comes from how long the player waits.
     let title = Text::new(
-        "THEODO RPG\n\nBouge avec les fleches. Touche un collegue pour combattre.\n\nTON TOUR : appuie sur A quand le curseur blanc est dans la zone VERTE (degats x2).\n\nSON TOUR : appuie sur A quand le \"!\" apparait pour esquiver.\n\nSTART pour jouer",
+        "THEODO RPG\n\nVide les pieces et trouve le bureau du boss (rouge sur la carte). Touche un collegue pour combattre.\n\nTON TOUR : appuie sur A quand le curseur blanc est dans la zone VERTE (degats x2).\n\nSON TOUR : appuie sur A quand le \"!\" apparait pour esquiver.\n\nSTART pour jouer",
         8,
         8,
     );
@@ -566,12 +534,13 @@ fn main(mut gba: agb::Gba) -> ! {
     }
 
     let mut rng = Rng::new(seed);
-    let mut depth = 1;
+    let mut depth = 1; // floor ("etage") number
     let mut stats = Stats::new();
     let mut hero_hp = stats.max_hp;
     let mut menu = Text::new("", 0, 0);
-    let mut room = new_room(&mut rng, depth);
-    draw_map(&mut background, &room);
+    let mut floor = dungeon::generate_floor(&mut rng, rooms_for_level(depth));
+    let mut room = enter_room(&mut floor, 0, None, depth, &mut rng);
+    draw_map(&mut background, &room, &floor);
 
     let mut hero = Object::new(sprites::ADAM_DOWN.sprite(0));
     let mut facing: &'static Tag = &sprites::ADAM_DOWN;
@@ -601,27 +570,26 @@ fn main(mut gba: agb::Gba) -> ! {
                         _ => &sprites::ADAM_DOWN,
                     };
                     let speed = 2;
-                    if !blocked(&room.map, room.hero.0 + dx * speed, room.hero.1) {
+                    if !blocked(&room, room.hero.0 + dx * speed, room.hero.1) {
                         room.hero.0 += dx * speed;
                     }
-                    if !blocked(&room.map, room.hero.0, room.hero.1 + dy * speed) {
+                    if !blocked(&room, room.hero.0, room.hero.1 + dy * speed) {
                         room.hero.1 += dy * speed;
                     }
                     hero.set_sprite(facing.animation_sprite(frame_count / 6));
                 } else {
                     hero.set_sprite(facing.sprite(0));
                 }
-                // Walk into the open door (top wall) to reach the next room.
-                let feet = ((room.hero.0 + 8) / 16, (room.hero.1 + 28) / 16);
-                if room.door_open()
-                    && feet == (room.door_x as i32, 1)
-                    && room.hero.1 + 26 <= 16 + 3
-                {
-                    depth += 1;
-                    hero_hp = (hero_hp + 3).min(stats.max_hp);
-                    room = new_room(&mut rng, depth);
-                    draw_map(&mut background, &room);
-                    hud_dirty = true;
+                // Walk into an open door to reach the neighbouring room.
+                let (fx, fy) = feet_cell(room.hero.0, room.hero.1);
+                if room.door_open() {
+                    if let Some(dir) = room.door_at(fx, fy) {
+                        if let Some(next) = floor.neighbour(room.idx, dir) {
+                            room = enter_room(&mut floor, next, Some(dir), depth, &mut rng);
+                            draw_map(&mut background, &room, &floor);
+                            hud_dirty = true;
+                        }
+                    }
                 }
                 let cam = camera(&room);
                 hero.set_pos((room.hero.0 - cam.0, room.hero.1 - cam.1));
@@ -721,8 +689,9 @@ fn main(mut gba: agb::Gba) -> ! {
                                     room.enemies.swap_remove(*enemy);
                                     combat_text = None;
                                     if room.door_open() {
-                                        // Last enemy down: the door opens, pick an upgrade.
-                                        draw_map(&mut background, &room);
+                                        // Last enemy down: doors open, pick an upgrade.
+                                        floor.rooms[room.idx].cleared = true;
+                                        draw_map(&mut background, &room, &floor);
                                         let options = pick_upgrades(&mut rng);
                                         menu = upgrade_menu(&options, 0);
                                         clear_ui(&mut ui);
@@ -732,20 +701,18 @@ fn main(mut gba: agb::Gba) -> ! {
                                         mode = Mode::Explore;
                                     }
                                     hud_dirty = true;
-                                    // Step away so we don't re-trigger instantly.
-                                    continue_frame(&mut gfx, &background, &hero, &room, &hud, frame_count);
                                     continue;
                                 }
                                 Then::Defeat => {
                                     depth = 1;
                                     stats = Stats::new();
                                     hero_hp = stats.max_hp;
-                                    room = new_room(&mut rng, depth);
-                                    draw_map(&mut background, &room);
+                                    floor = dungeon::generate_floor(&mut rng, rooms_for_level(depth));
+                                    room = enter_room(&mut floor, 0, None, depth, &mut rng);
+                                    draw_map(&mut background, &room, &floor);
                                     combat_text = None;
                                     mode = Mode::Explore;
                                     hud_dirty = true;
-                                    continue_frame(&mut gfx, &background, &hero, &room, &hud, frame_count);
                                     continue;
                                 }
                             }
@@ -777,6 +744,14 @@ fn main(mut gba: agb::Gba) -> ! {
                 apply_upgrade(options[*sel], &mut stats, &mut hero_hp);
                 mode = Mode::Explore;
                 hud_dirty = true;
+                if room.idx == floor.exit {
+                    // Boss office cleared: next floor.
+                    depth += 1;
+                    hero_hp = (hero_hp + 3).min(stats.max_hp);
+                    floor = dungeon::generate_floor(&mut rng, rooms_for_level(depth));
+                    room = enter_room(&mut floor, 0, None, depth, &mut rng);
+                    draw_map(&mut background, &room, &floor);
+                }
             }
         }
 
@@ -788,11 +763,11 @@ fn main(mut gba: agb::Gba) -> ! {
                     format!("   {} PV {}", e.kind.name(), e.hp.max(0))
                 }
                 Mode::Upgrade { .. } => String::new(),
-                Mode::Explore if room.door_open() => "   Porte ouverte ! (en haut)".into(),
-                Mode::Explore => format!("   Ennemis {}", room.enemies.len()),
+                Mode::Explore if room.idx == floor.exit && !room.door_open() => "  BOSS".into(),
+                Mode::Explore => String::new(),
             };
             hud = Text::new(
-                &format!("{}/{}   {} {depth}{extra}", hero_hp.max(0), stats.max_hp, room.kind.name()),
+                &format!("{}/{}  Etage {depth}  {}{extra}", hero_hp.max(0), stats.max_hp, room.template(&floor).name),
                 20,
                 0,
             );
@@ -809,6 +784,7 @@ fn main(mut gba: agb::Gba) -> ! {
         heart.show(&mut frame);
         match &mode {
             Mode::Explore => {
+                show_minimap(&mut frame, &floor, room.idx);
                 hero.show(&mut frame);
                 let cam = camera(&room);
                 for e in &room.enemies {
@@ -878,18 +854,27 @@ fn main(mut gba: agb::Gba) -> ! {
     }
 }
 
-fn continue_frame(
-    gfx: &mut agb::display::Graphics,
-    background: &RegularBackground,
-    hero: &Object,
-    room: &Room,
-    hud: &Text,
-    _frame_count: usize,
-) {
-    let _ = room;
-    let mut frame = gfx.frame();
-    hud.show(&mut frame);
-    hero.show(&mut frame);
-    background.show(&mut frame);
-    frame.commit();
+/// Mini-map in the top-right corner: visited rooms, their unexplored
+/// neighbours, the current room and (once known) the boss office.
+fn show_minimap(frame: &mut GraphicsFrame, floor: &Floor, current: usize) {
+    const CELL: i32 = 7;
+    let x0 = agb::display::WIDTH - dungeon::GRID as i32 * CELL - 3;
+    for (i, r) in floor.rooms.iter().enumerate() {
+        let known = r.visited || (0..4).any(|d| floor.neighbour(i, d).is_some_and(|n| floor.rooms[n].visited));
+        if !known {
+            continue;
+        }
+        let tag = if i == current {
+            &sprites::MM_CURRENT
+        } else if i == floor.exit {
+            &sprites::MM_EXIT
+        } else if r.visited {
+            &sprites::MM_ROOM
+        } else {
+            &sprites::MM_UNKNOWN
+        };
+        let mut o = Object::new(tag.sprite(0));
+        o.set_pos((x0 + r.gx as i32 * CELL, 3 + r.gy as i32 * CELL));
+        o.show(frame);
+    }
 }

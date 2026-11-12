@@ -95,4 +95,21 @@ ICONS = {"heart": 688, "cafe": 810, "focus": 1170, "reflexes": 197, "costard": 2
 for name, idx in ICONS.items():
     quantize(Image.open(ITEMS / f"item{idx}.png").convert("RGBA")).save(OUT / f"icon_{name}.png")
 
+# Mini-map cells (8x8): border + fill, transparent outside.
+def mm(fill, border, path):
+    im = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+    for y in range(1, 7):
+        for x in range(1, 7):
+            edge = x in (1, 6) or y in (1, 6)
+            c = border if edge else fill
+            if c:
+                im.putpixel((x, y), c)
+    im.save(OUT / path)
+
+
+mm((150, 150, 160, 255), (40, 40, 48, 255), "mm_room.png")
+mm((250, 250, 250, 255), (40, 40, 48, 255), "mm_current.png")
+mm((220, 70, 60, 255), (40, 40, 48, 255), "mm_exit.png")
+mm(None, (120, 120, 130, 255), "mm_unknown.png")
+
 print("ok:", sorted(p.name for p in OUT.iterdir()))
