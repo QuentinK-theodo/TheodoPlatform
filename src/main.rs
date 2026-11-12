@@ -253,6 +253,15 @@ fn draw_map(background: &mut RegularBackground, room: &Room) {
     }
 }
 
+fn fill_arena(arena: &mut RegularBackground, tile: usize) {
+    for y in 0..20 {
+        for x in 0..30 {
+            let idx = (y as usize % 2) * TILES_PER_ROW + tile * 2 + (x as usize % 2);
+            arena.set_tile((x, y), &bg::tiles.tiles, bg::tiles.tile_settings[idx]);
+        }
+    }
+}
+
 /// Camera top-left: centred on the hero, clamped to the room.
 fn camera(room: &Room) -> (i32, i32) {
     let max_x = wfc::W as i32 * 16 - agb::display::WIDTH;
@@ -360,6 +369,12 @@ fn main(mut gba: agb::Gba) -> ! {
         RegularBackgroundSize::Background64x64,
         TileFormat::FourBpp,
     );
+    // Combat backdrop: for now just the current room's floor.
+    let mut arena = RegularBackground::new(
+        Priority::P3,
+        RegularBackgroundSize::Background32x32,
+        TileFormat::FourBpp,
+    );
     let mut bar = RegularBackground::new(
         Priority::P1,
         RegularBackgroundSize::Background32x32,
@@ -445,6 +460,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 }) {
                     let e = &room.enemies[i];
                     let _ = e;
+                    fill_arena(&mut arena, room.kind.floor_tile());
                     title_text = Text::new("TON TOUR", 96, 20);
                     combat_text = Some(Text::new(AIM_HELP, 4, 124));
                     mode = Mode::Combat {
@@ -589,6 +605,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 background.show(&mut frame);
             }
             Mode::Combat { enemy, phase } => {
+                arena.show(&mut frame);
                 let e = &room.enemies[*enemy];
                 let mut h = Object::new(sprites::ADAM_IDLE.animation_sprite(frame_count / 8));
                 h.set_pos((60, 60));

@@ -24,7 +24,7 @@ TILES = [
     ("tile", [(ROOM, 176, 144)]),
     ("wall", [(ROOM, 128, 96)]),
     ("box", [FLOOR, (INTERIOR, 176, 168)]),
-    ("stool", [FLOOR, (INTERIOR, 96, 212)]),
+    ("stool", [FLOOR, (INTERIOR, 192, 728)]),  # potted plant
     ("door_closed", [(ROOM, 128, 96), (INTERIOR, 112, 142)]),
     ("door_open", [(ROOM, 128, 96), (INTERIOR, 128, 142)]),
     ("floor_red", [(ROOM, 176, 80)]),
