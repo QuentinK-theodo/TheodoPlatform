@@ -56,21 +56,32 @@ tiles.save(OUT / "tiles.png")
 DIRS = ["right", "up", "left", "down"]
 
 
-def save_gif(frames, path):
-    frames = [quantize(f) for f in frames]
-    frames[0].save(path, save_all=True, append_images=frames[1:], duration=100,
-                   loop=0, disposal=2, optimize=False)
+def save_gifs(anims):
+    """anims: {path: [frames]}. All frames share one 15-colour palette so the
+    whole character fits a single GBA sprite palette."""
+    allf = [f for fs in anims.values() for f in fs]
+    strip = Image.new("RGBA", (16 * len(allf), 32), (0, 0, 0, 0))
+    for i, f in enumerate(allf):
+        strip.alpha_composite(f, (16 * i, 0))
+    strip = quantize(strip)
+    i = 0
+    for path, fs in anims.items():
+        out = [strip.crop((16 * (i + k), 0, 16 * (i + k) + 16, 32)) for k in range(len(fs))]
+        i += len(fs)
+        out[0].save(path, save_all=True, append_images=out[1:], duration=100,
+                    loop=0, disposal=2, optimize=False)
 
 
 chars = PACK / "Characters_free"
-for d, name in enumerate(DIRS):
-    run = Image.open(chars / "Adam_run_16x16.png").convert("RGBA")
-    save_gif([crop(run, (d * 6 + i) * 16, 0, 16, 32) for i in range(6)], OUT / f"adam_{name}.gif")
-
 for who in ["Adam", "Bob", "Alex"]:
+    anims = {}
+    if who == "Adam":
+        run = Image.open(chars / "Adam_run_16x16.png").convert("RGBA")
+        for d, name in enumerate(DIRS):
+            anims[OUT / f"adam_{name}.gif"] = [crop(run, (d * 6 + i) * 16, 0, 16, 32) for i in range(6)]
     idle = Image.open(chars / f"{who}_idle_anim_16x16.png").convert("RGBA")
     # idle_anim: 24 frames, down-facing are the last 6
-    save_gif([crop(idle, (18 + i) * 16, 0, 16, 32) for i in range(6)],
-             OUT / f"{who.lower()}_idle.gif")
+    anims[OUT / f"{who.lower()}_idle.gif"] = [crop(idle, (18 + i) * 16, 0, 16, 32) for i in range(6)]
+    save_gifs(anims)
 
 print("ok:", sorted(p.name for p in OUT.iterdir()))

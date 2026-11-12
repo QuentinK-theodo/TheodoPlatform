@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Theodo RPG</title>
+  <style>
+    body { margin: 0; background: #111; color: #eee; font-family: system-ui, sans-serif; text-align: center; }
+    h1 { font-size: 1.4rem; margin: 16px; }
+    #game { width: min(720px, 100vw); height: min(480px, 66vw); margin: 0 auto; }
+    p { font-size: .9rem; color: #aaa; padding: 0 16px; }
+  </style>
+</head>
+<body>
+  <h1>Theodo RPG — démo GBA en Rust (agb)</h1>
+  <div id="game"></div>
+  <p>Flèches : bouger · A (touche X) : frapper / esquiver au bon moment · Entrée : START.<br>
+     Salles générées par Wave Function Collapse. Assets : LimeZu (Modern Interiors, free).</p>
+  <script>
+    EJS_player = "#game";
+    EJS_core = "gba";
+    EJS_gameUrl = "theodo_rpg.gba";
+    EJS_pathtodata = "https://cdn.emulatorjs.org/stable/data/";
+    EJS_startOnLoaded = true;
+  </script>
+  <script src="https://cdn.emulatorjs.org/stable/data/loader.js"></script>
+</body>
+</html>
