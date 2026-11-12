@@ -401,7 +401,7 @@ fn upgrade_menu(options: &[usize; 3], sel: usize) -> Text {
         let y = MENU_Y0 + i as i32 * MENU_STEP;
         let marker = if i == sel { ">" } else { "" };
         menu.objects.extend(Text::new(marker, 14, y).objects);
-        menu.objects.extend(Text::new(&format!("{name}\n{desc}"), 50, y - 4).objects);
+        menu.objects.extend(Text::new(&format!("{name}\n{desc}"), 50, y - 10).objects);
     }
     menu.objects.extend(Text::new("Haut/Bas pour choisir, A pour valider", 16, 140).objects);
     menu
