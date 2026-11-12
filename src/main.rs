@@ -45,7 +45,8 @@ include_aseprite!(
     "gfx/icon_dej.png",
     "gfx/icon_genie.png",
     "gfx/icon_counter.png",
-    "gfx/icon_afterwork.png"
+    "gfx/icon_afterwork.png",
+    "gfx/shadow.png"
 );
 
 static FONT: Font = include_font!("fonts/ark-pixel-10px-proportional-ja.ttf", 10);
@@ -271,6 +272,13 @@ fn draw_combat_bg(arena: &mut RegularBackground) {
             arena.set_tile((x, y), &combatbg::combat.tiles, combatbg::combat.tile_settings[(y * 30 + x) as usize]);
         }
     }
+}
+
+/// Shadow under a combat fighter's feet (shown after the fighter so it sits behind).
+fn show_shadow(frame: &mut GraphicsFrame, x: i32) {
+    let mut s = Object::new(sprites::SHADOW.sprite(0));
+    s.set_pos((x, FIGHTER_Y + 26));
+    s.show(frame);
 }
 
 /// Camera top-left: centred on the hero, clamped to the room.
@@ -832,6 +840,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 let mut h = Object::new(sprites::ADAM_IDLE.animation_sprite(frame_count / 8));
                 h.set_pos((60, FIGHTER_Y));
                 h.show(&mut frame);
+                show_shadow(&mut frame, 60);
                 // The enemy charges and reaches the hero in the middle of the dodge window.
                 let impact = (DODGE_FROM + DODGE_TO) / 2;
                 let ex = match phase {
@@ -842,6 +851,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 o.set_pos((ex, FIGHTER_Y));
                 o.set_hflip(true);
                 o.show(&mut frame);
+                show_shadow(&mut frame, ex);
                 if !matches!(phase, Phase::Message { .. }) {
                     title_text.show(&mut frame);
                 }
