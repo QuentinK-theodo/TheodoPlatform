@@ -85,6 +85,10 @@ impl Text {
             objects: layout.map(|l| renderer.show(&l, vec2(x, y))).collect(),
         }
     }
+    /// Frees the sprite VRAM held by the previous text when assigned over it.
+    fn empty() -> Self {
+        Text { objects: Vec::new() }
+    }
     fn show(&self, frame: &mut GraphicsFrame) {
         for o in &self.objects {
             o.show(frame);
@@ -543,6 +547,7 @@ fn main(mut gba: agb::Gba) -> ! {
         title.show(&mut frame);
         frame.commit();
     }
+    drop(title); // big text: give its sprite VRAM back
 
     let mut rng = Rng::new(seed);
     let mut depth = 1; // floor ("etage") number
@@ -614,7 +619,9 @@ fn main(mut gba: agb::Gba) -> ! {
                     draw_combat_bg(&mut arena);
                     clear_ui(&mut ui);
                     draw_panel(&mut ui, 0, 15, 29, 19);
+                    title_text = Text::empty();
                     title_text = Text::new("TON TOUR", 96, 20);
+                    combat_text = None;
                     combat_text = Some(Text::new(AIM_HELP, 8, 126));
                     mode = Mode::Combat {
                         enemy: i,
@@ -628,11 +635,17 @@ fn main(mut gba: agb::Gba) -> ! {
                 let mut next: Option<Phase> = None;
                 match phase {
                     Phase::Aim { cursor } => {
-                        *cursor += CURSOR_SPEED;
+                        // Judge the cursor where the player saw it (drawn last frame),
+                        // counting its 3px width, then move it.
                         let pressed = input.is_just_pressed(Button::A);
+                        let sweet = stats.sweet();
+                        let hit = (*cursor - 1..=*cursor + 1).any(|x| sweet.contains(&x));
+                        if !pressed {
+                            *cursor += CURSOR_SPEED;
+                        }
                         if pressed || *cursor >= BAR_W {
                             let base = 4 + stats.atk;
-                            let (dmg, msg) = if pressed && stats.sweet().contains(cursor) {
+                            let (dmg, msg) = if pressed && hit {
                                 let d = base * stats.crit_mult;
                                 (d, format!("PARFAIT ! Dans le vert : {d} degats"))
                             } else if pressed {
@@ -655,7 +668,8 @@ fn main(mut gba: agb::Gba) -> ! {
                             *pressed = Some(*t);
                         }
                         if *t >= ATTACK_LEN {
-                            let dodged = matches!(pressed, Some(p) if stats.dodge().contains(p));
+                            // One frame of tolerance: the "!!" seen was drawn the previous frame.
+                            let dodged = matches!(pressed, Some(p) if stats.dodge().contains(p) || stats.dodge().contains(&(*p - 1)));
                             let dmg = if dodged { 0 } else { 2 + depth };
                             hero_hp -= dmg;
                             if dodged {
@@ -687,13 +701,17 @@ fn main(mut gba: agb::Gba) -> ! {
                         if *timer <= 0 {
                             match *then {
                                 Then::EnemyTurn => {
+                                    title_text = Text::empty();
                                     title_text = Text::new("SON TOUR", 96, 20);
+                                    combat_text = None;
                                     combat_text = Some(Text::new(DODGE_HELP, 8, 126));
                                     *phase = Phase::EnemyAttack { t: 0, pressed: None };
                                     hud_dirty = true;
                                 }
                                 Then::PlayerTurn => {
+                                    title_text = Text::empty();
                                     title_text = Text::new("TON TOUR", 96, 20);
+                                    combat_text = None;
                                     combat_text = Some(Text::new(AIM_HELP, 8, 126));
                                     *phase = Phase::Aim { cursor: 0 };
                                     hud_dirty = true;
@@ -701,11 +719,13 @@ fn main(mut gba: agb::Gba) -> ! {
                                 Then::Victory => {
                                     room.enemies.swap_remove(*enemy);
                                     combat_text = None;
+                                    title_text = Text::empty();
                                     if room.door_open() {
                                         // Last enemy down: doors open, pick an upgrade.
                                         floor.rooms[room.idx].cleared = true;
                                         draw_map(&mut background, &room, &floor);
                                         let options = pick_upgrades(&mut rng);
+                                        menu = Text::empty();
                                         menu = upgrade_menu(&options, 0);
                                         draw_combat_bg(&mut arena);
                                         clear_ui(&mut ui);
@@ -735,6 +755,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 }
                 if let Some(p) = next {
                     if let Phase::Message { text, .. } = &p {
+                        combat_text = None;
                         combat_text = Some(Text::new(text, 8, 126));
                     }
                     *phase = p;
@@ -752,11 +773,13 @@ fn main(mut gba: agb::Gba) -> ! {
                 *sel = (*sel + 1) % 3;
             }
             if *sel != old {
+                menu = Text::empty();
                 menu = upgrade_menu(options, *sel);
                 draw_upgrade_panel(&mut ui, *sel);
             }
             if input.is_just_pressed(Button::A) {
                 apply_upgrade(options[*sel], &mut stats, &mut hero_hp);
+                menu = Text::empty();
                 mode = Mode::Explore;
                 hud_dirty = true;
                 if room.idx == floor.exit {
@@ -781,6 +804,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 Mode::Explore if room.idx == floor.exit && !room.door_open() => "  BOSS".into(),
                 Mode::Explore => String::new(),
             };
+            hud = Text::empty();
             hud = Text::new(
                 &format!("{}/{}  Etage {depth}  {}{extra}", hero_hp.max(0), stats.max_hp, room.template(&floor).name),
                 20,
