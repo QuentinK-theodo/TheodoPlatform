@@ -479,8 +479,22 @@ fn draw_panel(panel: &mut RegularBackground, x0: i32, y0: i32, x1: i32, y1: i32)
     }
 }
 
-fn new_panel() -> RegularBackground {
-    RegularBackground::new(Priority::P2, RegularBackgroundSize::Background32x32, TileFormat::FourBpp)
+/// Blank the whole UI layer (reused, never reallocated: agb only has 8 screenblocks
+/// and the scrolling map already takes 4).
+fn clear_bar(ui: &mut RegularBackground) {
+    let empty = DynamicTile16::new();
+    for tx in 0..BAR_W / 8 {
+        ui.set_tile_dynamic16(((BAR_X / 8) + tx, BAR_Y / 8), &empty, TileEffect::new(false, false, BAR_PALETTE));
+    }
+}
+
+fn clear_ui(ui: &mut RegularBackground) {
+    let empty = DynamicTile16::new(); // all pixels transparent
+    for y in 0..20 {
+        for x in 0..30 {
+            ui.set_tile_dynamic16((x, y), &empty, TileEffect::new(false, false, BAR_PALETTE));
+        }
+    }
 }
 
 // --- Game -----------------------------------------------------------------
@@ -517,8 +531,9 @@ fn main(mut gba: agb::Gba) -> ! {
         TileFormat::FourBpp,
     );
     draw_combat_bg(&mut arena);
-    let mut panel = new_panel();
-    let mut bar = RegularBackground::new(
+    let mut bar_visible = false;
+    // UI layer: panels + timing bar share one background.
+    let mut ui = RegularBackground::new(
         Priority::P1,
         RegularBackgroundSize::Background32x32,
         TileFormat::FourBpp,
@@ -608,8 +623,8 @@ fn main(mut gba: agb::Gba) -> ! {
                 }) {
                     let e = &room.enemies[i];
                     let _ = e;
-                    panel = new_panel();
-                    draw_panel(&mut panel, 0, 15, 29, 19);
+                    clear_ui(&mut ui);
+                    draw_panel(&mut ui, 0, 15, 29, 19);
                     title_text = Text::new("TON TOUR", 96, 20);
                     combat_text = Some(Text::new(AIM_HELP, 8, 126));
                     mode = Mode::Combat {
@@ -702,8 +717,8 @@ fn main(mut gba: agb::Gba) -> ! {
                                         draw_map(&mut background, &room);
                                         let options = pick_upgrades(&mut rng);
                                         menu = upgrade_menu(&options, 0);
-                                        panel = new_panel();
-                                        draw_panel(&mut panel, 1, 2, 28, 19);
+                                        clear_ui(&mut ui);
+                                        draw_panel(&mut ui, 1, 2, 28, 19);
                                         mode = Mode::Upgrade { options, sel: 0 };
                                     } else {
                                         mode = Mode::Explore;
@@ -802,7 +817,7 @@ fn main(mut gba: agb::Gba) -> ! {
             }
             Mode::Upgrade { options, .. } => {
                 arena.show(&mut frame);
-                panel.show(&mut frame);
+                ui.show(&mut frame);
                 menu.show(&mut frame);
                 for (i, &u) in options.iter().enumerate() {
                     let mut o = Object::new(UPGRADE_ICONS[u].sprite(0));
@@ -812,7 +827,7 @@ fn main(mut gba: agb::Gba) -> ! {
             }
             Mode::Combat { enemy, phase } => {
                 arena.show(&mut frame);
-                panel.show(&mut frame);
+                ui.show(&mut frame);
                 let e = &room.enemies[*enemy];
                 let mut h = Object::new(sprites::ADAM_IDLE.animation_sprite(frame_count / 8));
                 h.set_pos((60, FIGHTER_Y));
@@ -832,8 +847,12 @@ fn main(mut gba: agb::Gba) -> ! {
                 }
                 match phase {
                     Phase::Aim { cursor } => {
-                        draw_bar(&mut bar, *cursor, &stats.sweet());
-                        bar.show(&mut frame);
+                        draw_bar(&mut ui, *cursor, &stats.sweet());
+                        bar_visible = true;
+                    }
+                    _ if !matches!(phase, Phase::Aim { .. }) && bar_visible => {
+                        clear_bar(&mut ui);
+                        bar_visible = false;
                     }
                     Phase::EnemyAttack { t, .. } if stats.dodge().contains(t) => {
                         alert.show(&mut frame);
