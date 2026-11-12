@@ -28,8 +28,10 @@ jobs:
         run: |
           cargo build --release
           mkdir -p site
-          agb-gbafix target/thumbv4t-none-eabi/release/theodo_rpg -o site/theodo_rpg.gba
-          cp web/index.html site/
+          # Versioned ROM name: EmulatorJS caches ROMs in IndexedDB by URL.
+          rom="theodo_rpg-${GITHUB_SHA::8}.gba"
+          agb-gbafix target/thumbv4t-none-eabi/release/theodo_rpg -o "site/$rom"
+          sed "s/theodo_rpg\.gba/$rom/" web/index.html > site/index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
