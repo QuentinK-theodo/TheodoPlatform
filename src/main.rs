@@ -319,7 +319,7 @@ const AIM_HELP: &str = "Appuie sur A quand le curseur blanc\nest dans la zone VE
 const DODGE_HELP: &str = "Il fonce sur toi ! Appuie sur A\nquand \"!!\" apparait pour esquiver.";
 
 /// Draw the timing bar (grey track, green sweet spot, white cursor) on its own background.
-fn draw_bar(bar: &mut RegularBackground, cursor: i32) {
+fn draw_bar(bar: &mut RegularBackground, cursor: i32, sweet: &core::ops::RangeInclusive<i32>) {
     for tx in 0..BAR_W / 8 {
         let mut tile = DynamicTile16::new();
         for (row, line) in tile.data_mut().iter_mut().enumerate() {
@@ -330,7 +330,7 @@ fn draw_bar(bar: &mut RegularBackground, cursor: i32) {
                     1 // dark border
                 } else if (cursor - 1..=cursor + 1).contains(&x) {
                     4 // cursor
-                } else if (SWEET_START..=SWEET_END).contains(&x) {
+                } else if sweet.contains(&x) {
                     3 // green sweet spot
                 } else {
                     2 // grey track
@@ -347,11 +347,85 @@ fn draw_bar(bar: &mut RegularBackground, cursor: i32) {
     }
 }
 
+// --- Upgrades (roguelite) -------------------------------------------------
+
+/// Run-wide hero stats, upgraded after each cleared room and reset on death.
+struct Stats {
+    max_hp: i32,
+    atk: i32,
+    /// Extra pixels on each side of the green zone.
+    sweet_bonus: i32,
+    /// Extra frames on each side of the dodge window.
+    dodge_bonus: i32,
+    crit_mult: i32,
+    counter: i32,
+    lifesteal: i32,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Stats { max_hp: HERO_MAX_HP, atk: 0, sweet_bonus: 0, dodge_bonus: 0, crit_mult: 2, counter: 0, lifesteal: 0 }
+    }
+    fn sweet(&self) -> core::ops::RangeInclusive<i32> {
+        (SWEET_START - self.sweet_bonus).max(0)..=(SWEET_END + self.sweet_bonus).min(BAR_W - 1)
+    }
+    fn dodge(&self) -> core::ops::RangeInclusive<i32> {
+        (DODGE_FROM - self.dodge_bonus)..=(DODGE_TO + self.dodge_bonus).min(ATTACK_LEN - 1)
+    }
+}
+
+const UPGRADES: [(&str, &str); 8] = [
+    ("Cafe serre", "+1 attaque"),
+    ("Concentration", "zone verte plus large"),
+    ("Reflexes", "esquive plus facile"),
+    ("Costard renforce", "+5 PV max"),
+    ("Pause dej'", "soin complet"),
+    ("Coup de genie", "critique x3 (+1)"),
+    ("Contre-attaque", "esquive = 3 degats"),
+    ("Afterwork", "+1 PV par coup porte"),
+];
+
+fn apply_upgrade(i: usize, stats: &mut Stats, hp: &mut i32) {
+    match i {
+        0 => stats.atk += 1,
+        1 => stats.sweet_bonus += 5,
+        2 => stats.dodge_bonus += 3,
+        3 => {
+            stats.max_hp += 5;
+            *hp += 5;
+        }
+        4 => *hp = stats.max_hp,
+        5 => stats.crit_mult += 1,
+        6 => stats.counter += 3,
+        _ => stats.lifesteal += 1,
+    }
+}
+
+fn pick_upgrades(rng: &mut Rng) -> [usize; 3] {
+    let mut pool: Vec<usize> = (0..UPGRADES.len()).collect();
+    let mut out = [0; 3];
+    for o in out.iter_mut() {
+        *o = pool.swap_remove(rng.range(pool.len() as u32) as usize);
+    }
+    out
+}
+
+fn upgrade_menu(options: &[usize; 3], sel: usize) -> Text {
+    let mut s = String::from("SALLE TERMINEE ! Choisis une competence :\n\n");
+    for (i, &u) in options.iter().enumerate() {
+        let (name, desc) = UPGRADES[u];
+        s += &format!("{} {name} : {desc}\n\n", if i == sel { ">" } else { "  " });
+    }
+    s += "Haut/Bas puis A";
+    Text::new(&s, 8, 24)
+}
+
 // --- Game -----------------------------------------------------------------
 
 enum Mode {
     Explore,
     Combat { enemy: usize, phase: Phase },
+    Upgrade { options: [usize; 3], sel: usize },
 }
 
 #[agb::entry]
@@ -401,7 +475,9 @@ fn main(mut gba: agb::Gba) -> ! {
 
     let mut rng = Rng::new(seed);
     let mut depth = 1;
-    let mut hero_hp = HERO_MAX_HP;
+    let mut stats = Stats::new();
+    let mut hero_hp = stats.max_hp;
+    let mut menu = Text::new("", 0, 0);
     let mut room = new_room(&mut rng, depth);
     draw_map(&mut background, &room);
 
@@ -420,6 +496,7 @@ fn main(mut gba: agb::Gba) -> ! {
         input.update();
 
         match &mut mode {
+            Mode::Upgrade { .. } => {} // handled below
             Mode::Explore => {
                 let (dx, dy) = (input.x_tri() as i32, input.y_tri() as i32);
                 if dx != 0 || dy != 0 {
@@ -447,7 +524,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     && room.hero.1 + 26 <= 16 + 3
                 {
                     depth += 1;
-                    hero_hp = (hero_hp + 5).min(HERO_MAX_HP);
+                    hero_hp = (hero_hp + 3).min(stats.max_hp);
                     room = new_room(&mut rng, depth);
                     draw_map(&mut background, &room);
                     hud_dirty = true;
@@ -478,16 +555,19 @@ fn main(mut gba: agb::Gba) -> ! {
                         *cursor += CURSOR_SPEED;
                         let pressed = input.is_just_pressed(Button::A);
                         if pressed || *cursor >= BAR_W {
-                            let (dmg, msg) = if pressed && (SWEET_START..=SWEET_END).contains(cursor) {
-                                (8, "PARFAIT ! Dans le vert : 8 degats")
+                            let base = 4 + stats.atk;
+                            let (dmg, msg) = if pressed && stats.sweet().contains(cursor) {
+                                let d = base * stats.crit_mult;
+                                (d, format!("PARFAIT ! Dans le vert : {d} degats"))
                             } else if pressed {
-                                (4, "A cote du vert : 4 degats")
+                                (base, format!("A cote du vert : {base} degats"))
                             } else {
-                                (2, "Pas appuye a temps : 2 degats")
+                                (base / 2, format!("Pas appuye a temps : {} degats", base / 2))
                             };
                             e.hp -= dmg;
+                            hero_hp = (hero_hp + stats.lifesteal).min(stats.max_hp);
                             next = Some(Phase::Message {
-                                text: msg.into(),
+                                text: msg,
                                 timer: 50,
                                 then: if e.hp <= 0 { Then::Victory } else { Then::EnemyTurn },
                             });
@@ -499,11 +579,16 @@ fn main(mut gba: agb::Gba) -> ! {
                             *pressed = Some(*t);
                         }
                         if *t >= ATTACK_LEN {
-                            let dodged = matches!(pressed, Some(p) if (DODGE_FROM..=DODGE_TO).contains(p));
+                            let dodged = matches!(pressed, Some(p) if stats.dodge().contains(p));
                             let dmg = if dodged { 0 } else { 2 + depth };
                             hero_hp -= dmg;
+                            if dodged {
+                                e.hp -= stats.counter;
+                            }
                             next = Some(Phase::Message {
-                                text: if dodged {
+                                text: if dodged && stats.counter > 0 {
+                                    format!("ESQUIVE + contre-attaque : {} degats", stats.counter)
+                                } else if dodged {
                                     "ESQUIVE ! Aucun degat".into()
                                 } else if pressed.is_some() {
                                     format!("Mauvais timing ! -{dmg} PV")
@@ -511,7 +596,13 @@ fn main(mut gba: agb::Gba) -> ! {
                                     format!("Pas d'esquive ! -{dmg} PV")
                                 },
                                 timer: 50,
-                                then: if hero_hp <= 0 { Then::Defeat } else { Then::PlayerTurn },
+                                then: if hero_hp <= 0 {
+                                    Then::Defeat
+                                } else if e.hp <= 0 {
+                                    Then::Victory
+                                } else {
+                                    Then::PlayerTurn
+                                },
                             });
                         }
                     }
@@ -535,10 +626,14 @@ fn main(mut gba: agb::Gba) -> ! {
                                     room.enemies.swap_remove(*enemy);
                                     combat_text = None;
                                     if room.door_open() {
-                                        // Last enemy down: the door opens.
+                                        // Last enemy down: the door opens, pick an upgrade.
                                         draw_map(&mut background, &room);
+                                        let options = pick_upgrades(&mut rng);
+                                        menu = upgrade_menu(&options, 0);
+                                        mode = Mode::Upgrade { options, sel: 0 };
+                                    } else {
+                                        mode = Mode::Explore;
                                     }
-                                    mode = Mode::Explore;
                                     hud_dirty = true;
                                     // Step away so we don't re-trigger instantly.
                                     continue_frame(&mut gfx, &background, &hero, &room, &hud, frame_count);
@@ -546,7 +641,8 @@ fn main(mut gba: agb::Gba) -> ! {
                                 }
                                 Then::Defeat => {
                                     depth = 1;
-                                    hero_hp = HERO_MAX_HP;
+                                    stats = Stats::new();
+                                    hero_hp = stats.max_hp;
                                     room = new_room(&mut rng, depth);
                                     draw_map(&mut background, &room);
                                     combat_text = None;
@@ -569,6 +665,24 @@ fn main(mut gba: agb::Gba) -> ! {
             }
         }
 
+        if let Mode::Upgrade { options, sel } = &mut mode {
+            let old = *sel;
+            if input.is_just_pressed(Button::Up) {
+                *sel = (*sel + 2) % 3;
+            }
+            if input.is_just_pressed(Button::Down) {
+                *sel = (*sel + 1) % 3;
+            }
+            if *sel != old {
+                menu = upgrade_menu(options, *sel);
+            }
+            if input.is_just_pressed(Button::A) {
+                apply_upgrade(options[*sel], &mut stats, &mut hero_hp);
+                mode = Mode::Explore;
+                hud_dirty = true;
+            }
+        }
+
         if hud_dirty {
             hud_dirty = false;
             let extra = match &mode {
@@ -576,11 +690,12 @@ fn main(mut gba: agb::Gba) -> ! {
                     let e = &room.enemies[*enemy];
                     format!("   {} PV {}", e.kind.name(), e.hp.max(0))
                 }
+                Mode::Upgrade { .. } => String::new(),
                 Mode::Explore if room.door_open() => "   Porte ouverte ! (en haut)".into(),
                 Mode::Explore => format!("   Ennemis {}", room.enemies.len()),
             };
             hud = Text::new(
-                &format!("{} {depth}  PV {}/{HERO_MAX_HP}{extra}", room.kind.name(), hero_hp.max(0)),
+                &format!("{} {depth}  PV {}/{}{extra}", room.kind.name(), hero_hp.max(0), stats.max_hp),
                 4,
                 0,
             );
@@ -604,6 +719,10 @@ fn main(mut gba: agb::Gba) -> ! {
                 background.set_scroll_pos(cam);
                 background.show(&mut frame);
             }
+            Mode::Upgrade { .. } => {
+                arena.show(&mut frame);
+                menu.show(&mut frame);
+            }
             Mode::Combat { enemy, phase } => {
                 arena.show(&mut frame);
                 let e = &room.enemies[*enemy];
@@ -625,10 +744,10 @@ fn main(mut gba: agb::Gba) -> ! {
                 }
                 match phase {
                     Phase::Aim { cursor } => {
-                        draw_bar(&mut bar, *cursor);
+                        draw_bar(&mut bar, *cursor, &stats.sweet());
                         bar.show(&mut frame);
                     }
-                    Phase::EnemyAttack { t, .. } if (DODGE_FROM..=DODGE_TO).contains(t) => {
+                    Phase::EnemyAttack { t, .. } if stats.dodge().contains(t) => {
                         alert.show(&mut frame);
                     }
                     _ => {}
