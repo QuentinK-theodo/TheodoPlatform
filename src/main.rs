@@ -26,6 +26,8 @@ use agb::{
 use wfc::{Map, Rng, Terrain};
 
 include_background_gfx!(mod bg, tiles => "gfx/tiles.png");
+// Separate palettes: loaded only while the map is hidden (combat, upgrade menu).
+include_background_gfx!(mod combatbg, combat => 256 deduplicate "gfx/combat_bg.png");
 include_aseprite!(
     mod sprites,
     "gfx/adam_down.gif",
@@ -262,11 +264,11 @@ fn draw_map(background: &mut RegularBackground, room: &Room) {
     }
 }
 
-fn fill_arena(arena: &mut RegularBackground, tile: usize) {
-    for y in 0..20 {
-        for x in 0..30 {
-            let idx = (y as usize % 2) * TILES_PER_ROW + tile * 2 + (x as usize % 2);
-            arena.set_tile((x, y), &bg::tiles.tiles, bg::tiles.tile_settings[idx]);
+/// Combat backdrop: the office illustration (gfx/combat_bg.png, 30x20 tiles).
+fn draw_combat_bg(arena: &mut RegularBackground) {
+    for y in 0..20i32 {
+        for x in 0..30i32 {
+            arena.set_tile((x, y), &combatbg::combat.tiles, combatbg::combat.tile_settings[(y * 30 + x) as usize]);
         }
     }
 }
@@ -324,6 +326,8 @@ const ATTACK_LEN: i32 = 80;
 const DODGE_FROM: i32 = 56;
 const DODGE_TO: i32 = 72;
 const BAR_PALETTE: u8 = 15;
+/// Fighters stand on the desks' level of the combat backdrop.
+const FIGHTER_Y: i32 = 82;
 const AIM_HELP: &str = "Appuie sur A quand le curseur blanc\nest dans la zone VERTE : degats x2 !";
 const DODGE_HELP: &str = "Il fonce sur toi ! Appuie sur A\nquand \"!!\" apparait pour esquiver.";
 
@@ -491,10 +495,14 @@ enum Mode {
 fn main(mut gba: agb::Gba) -> ! {
     let mut gfx = gba.graphics.get();
     let mut input = ButtonController::new();
-    gfx.set_background_palettes(bg::PALETTES);
-    for (i, c) in [0x0000u16, 0x1084, 0x4210, 0x03E0, 0x7FFF].into_iter().enumerate() {
-        gfx.set_background_palette_colour(BAR_PALETTE as usize, i, Rgb15::new(c));
-    }
+    let set_palettes = |gfx: &mut agb::display::Graphics, combat: bool| {
+        gfx.set_background_palettes(if combat { combatbg::PALETTES } else { bg::PALETTES });
+        for (i, c) in [0x0000u16, 0x1084, 0x4210, 0x03E0, 0x7FFF].into_iter().enumerate() {
+            gfx.set_background_palette_colour(BAR_PALETTE as usize, i, Rgb15::new(c));
+        }
+    };
+    set_palettes(&mut gfx, false);
+    let mut combat_palettes = false;
 
     // 64x64 tiles = 512x512 px: enough for a 30x20 room of 16x16 cells.
     let mut background = RegularBackground::new(
@@ -502,12 +510,13 @@ fn main(mut gba: agb::Gba) -> ! {
         RegularBackgroundSize::Background64x64,
         TileFormat::FourBpp,
     );
-    // Combat backdrop: for now just the current room's floor.
+    // Combat backdrop (256 colours).
     let mut arena = RegularBackground::new(
         Priority::P3,
         RegularBackgroundSize::Background32x32,
-        TileFormat::FourBpp,
+        TileFormat::EightBpp,
     );
+    draw_combat_bg(&mut arena);
     let mut panel = new_panel();
     let mut bar = RegularBackground::new(
         Priority::P1,
@@ -599,7 +608,6 @@ fn main(mut gba: agb::Gba) -> ! {
                 }) {
                     let e = &room.enemies[i];
                     let _ = e;
-                    fill_arena(&mut arena, room.kind.floor_tile());
                     panel = new_panel();
                     draw_panel(&mut panel, 0, 15, 29, 19);
                     title_text = Text::new("TON TOUR", 96, 20);
@@ -767,6 +775,12 @@ fn main(mut gba: agb::Gba) -> ! {
             );
         }
 
+        let want_combat = !matches!(mode, Mode::Explore);
+        if want_combat != combat_palettes {
+            combat_palettes = want_combat;
+            set_palettes(&mut gfx, want_combat);
+        }
+
         let mut frame = gfx.frame();
         hud.show(&mut frame);
         heart.show(&mut frame);
@@ -801,7 +815,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 panel.show(&mut frame);
                 let e = &room.enemies[*enemy];
                 let mut h = Object::new(sprites::ADAM_IDLE.animation_sprite(frame_count / 8));
-                h.set_pos((60, 60));
+                h.set_pos((60, FIGHTER_Y));
                 h.show(&mut frame);
                 // The enemy charges and reaches the hero in the middle of the dodge window.
                 let impact = (DODGE_FROM + DODGE_TO) / 2;
@@ -810,7 +824,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     _ => 160,
                 };
                 let mut o = Object::new(e.kind.tag().animation_sprite(frame_count / 8));
-                o.set_pos((ex, 60));
+                o.set_pos((ex, FIGHTER_Y));
                 o.set_hflip(true);
                 o.show(&mut frame);
                 if !matches!(phase, Phase::Message { .. }) {
