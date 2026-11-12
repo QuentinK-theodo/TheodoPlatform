@@ -229,6 +229,12 @@ fn draw_combat_bg(arena: &mut RegularBackground) {
             arena.set_tile((x, y), &combatbg::combat.tiles, combatbg::combat.tile_settings[(y * 30 + x) as usize]);
         }
     }
+    // Pin every map tile in VRAM by also placing them off-screen (rows 22-23):
+    // room changes then never free/reallocate map tiles.
+    for i in 0..TILES_PER_ROW * 2 {
+        let (x, y) = ((i % TILES_PER_ROW) as i32, 22 + (i / TILES_PER_ROW) as i32);
+        arena.set_tile((x, y), &bg::tiles.tiles, bg::tiles.tile_settings[i]);
+    }
 }
 
 /// Shadow under a combat fighter's feet (shown after the fighter so it sits behind).
@@ -311,35 +317,6 @@ const FIGHTER_Y: i32 = 82;
 const AIM_HELP: &str = "Appuie sur A quand le curseur blanc\nest dans la zone VERTE : degats x2 !";
 const DODGE_HELP: &str = "Il fonce sur toi ! Appuie sur A\nquand \"!!\" apparait pour esquiver.";
 
-/// Draw the timing bar (grey track, green sweet spot, white cursor) on its own background.
-fn draw_bar(bar: &mut RegularBackground, cursor: i32, sweet: &core::ops::RangeInclusive<i32>) {
-    for tx in 0..BAR_W / 8 {
-        let mut tile = DynamicTile16::new();
-        for (row, line) in tile.data_mut().iter_mut().enumerate() {
-            let mut v = 0u32;
-            for px in 0..8 {
-                let x = tx * 8 + px;
-                let c = if row == 0 || row == 7 {
-                    1 // dark border
-                } else if (cursor - 1..=cursor + 1).contains(&x) {
-                    4 // cursor
-                } else if sweet.contains(&x) {
-                    3 // green sweet spot
-                } else {
-                    2 // grey track
-                };
-                v |= c << (px * 4);
-            }
-            *line = v;
-        }
-        bar.set_tile_dynamic16(
-            ((BAR_X / 8) + tx, BAR_Y / 8),
-            &tile,
-            TileEffect::new(false, false, BAR_PALETTE),
-        );
-    }
-}
-
 // --- Upgrades (roguelite) -------------------------------------------------
 
 /// Run-wide hero stats, upgraded after each cleared room and reset on death.
@@ -392,13 +369,6 @@ static UPGRADE_ICONS: [&Tag; 8] = [
 const MENU_Y0: i32 = 48;
 const MENU_STEP: i32 = 32; // multiple of 8 so the highlight box aligns with tiles
 
-/// Menu panel with the selected option highlighted (lighter fill, white border).
-fn draw_upgrade_panel(ui: &mut RegularBackground, sel: usize) {
-    draw_panel(ui, 1, 2, 28, 19);
-    let top = (MENU_Y0 - 6 + sel as i32 * MENU_STEP) / 8;
-    draw_box(ui, 2, top, 27, top + 3, 2, 4);
-}
-
 fn apply_upgrade(i: usize, stats: &mut Stats, hp: &mut i32) {
     match i {
         0 => stats.atk += 1,
@@ -437,53 +407,113 @@ fn upgrade_menu(options: &[usize; 3], sel: usize) -> Text {
     menu
 }
 
-/// Dark rounded-ish panel (generated, no asset): fills tile rect [x0,x1]x[y0,y1].
-fn draw_panel(panel: &mut RegularBackground, x0: i32, y0: i32, x1: i32, y1: i32) {
-    draw_box(panel, x0, y0, x1, y1, 1, 2);
+// --- UI tiles -------------------------------------------------------------
+//
+// All UI tiles are created once and kept alive for the whole game. Creating and
+// dropping dynamic tiles every frame made agb's VRAM manager hand out tiles still
+// used by the combat backdrop (visible corruption), so nothing here churns.
+
+fn fill_tile(tile: &mut DynamicTile16, mut colour: impl FnMut(usize, usize) -> u32) {
+    for (row, line) in tile.data_mut().iter_mut().enumerate() {
+        let mut v = 0u32;
+        for px in 0..8 {
+            v |= colour(px, row) << (px * 4);
+        }
+        *line = v;
+    }
 }
 
-/// 9-slice box with the given fill / border colours (bar palette indices).
-fn draw_box(panel: &mut RegularBackground, x0: i32, y0: i32, x1: i32, y1: i32, fill: u32, border: u32) {
-    let make = |top: bool, bottom: bool, left: bool, right: bool| {
-        let mut tile = DynamicTile16::new();
-        for (row, line) in tile.data_mut().iter_mut().enumerate() {
-            let mut v = 0u32;
-            for px in 0..8u32 {
-                let edge = (top && row == 0) || (bottom && row == 7) || (left && px == 0) || (right && px == 7);
-                v |= if edge { border } else { fill } << (px * 4);
+/// 9-slice set: index = row * 3 + col (0 = top/left edge, 2 = bottom/right edge).
+fn nine_slice(fill: u32, border: u32) -> Vec<DynamicTile16> {
+    (0..9)
+        .map(|i| {
+            let (r, c) = (i / 3, i % 3);
+            let mut t = DynamicTile16::new();
+            fill_tile(&mut t, |px, row| {
+                let edge = (r == 0 && row == 0) || (r == 2 && row == 7) || (c == 0 && px == 0) || (c == 2 && px == 7);
+                if edge { border } else { fill }
+            });
+            t
+        })
+        .collect()
+}
+
+struct UiTiles {
+    empty: DynamicTile16,
+    panel: Vec<DynamicTile16>,
+    highlight: Vec<DynamicTile16>,
+    bar: Vec<DynamicTile16>,
+}
+
+impl UiTiles {
+    fn new() -> Self {
+        let mut empty = DynamicTile16::new();
+        fill_tile(&mut empty, |_, _| 0);
+        UiTiles {
+            empty,
+            panel: nine_slice(1, 2),
+            highlight: nine_slice(2, 4),
+            bar: (0..BAR_W / 8).map(|_| DynamicTile16::new()).collect(),
+        }
+    }
+
+    fn put(ui: &mut RegularBackground, x: i32, y: i32, tile: &DynamicTile16) {
+        ui.set_tile_dynamic16((x, y), tile, TileEffect::new(false, false, BAR_PALETTE));
+    }
+
+    fn clear(&self, ui: &mut RegularBackground) {
+        for y in 0..20 {
+            for x in 0..30 {
+                Self::put(ui, x, y, &self.empty);
             }
-            *line = v;
-        }
-        tile
-    };
-    let mut tiles: Vec<DynamicTile16> = Vec::new();
-    for i in 0..9 {
-        let (r, c) = (i / 3, i % 3);
-        tiles.push(make(r == 0, r == 2, c == 0, c == 2));
-    }
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let r = if y == y0 { 0 } else if y == y1 { 2 } else { 1 };
-            let c = if x == x0 { 0 } else if x == x1 { 2 } else { 1 };
-            panel.set_tile_dynamic16((x, y), &tiles[r * 3 + c], TileEffect::new(false, false, BAR_PALETTE));
         }
     }
-}
 
-/// Blank the whole UI layer (reused, never reallocated: agb only has 8 screenblocks
-/// and the scrolling map already takes 4).
-fn clear_bar(ui: &mut RegularBackground) {
-    let empty = DynamicTile16::new();
-    for tx in 0..BAR_W / 8 {
-        ui.set_tile_dynamic16(((BAR_X / 8) + tx, BAR_Y / 8), &empty, TileEffect::new(false, false, BAR_PALETTE));
+    fn draw_box(ui: &mut RegularBackground, set: &[DynamicTile16], x0: i32, y0: i32, x1: i32, y1: i32) {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let r = if y == y0 { 0 } else if y == y1 { 2 } else { 1 };
+                let c = if x == x0 { 0 } else if x == x1 { 2 } else { 1 };
+                Self::put(ui, x, y, &set[r * 3 + c]);
+            }
+        }
     }
-}
 
-fn clear_ui(ui: &mut RegularBackground) {
-    let empty = DynamicTile16::new(); // all pixels transparent
-    for y in 0..20 {
-        for x in 0..30 {
-            ui.set_tile_dynamic16((x, y), &empty, TileEffect::new(false, false, BAR_PALETTE));
+    fn panel(&self, ui: &mut RegularBackground, x0: i32, y0: i32, x1: i32, y1: i32) {
+        Self::draw_box(ui, &self.panel, x0, y0, x1, y1);
+    }
+
+    /// Menu panel with the selected option highlighted.
+    fn upgrade_panel(&self, ui: &mut RegularBackground, sel: usize) {
+        self.panel(ui, 1, 2, 28, 19);
+        let top = (MENU_Y0 - 6 + sel as i32 * MENU_STEP) / 8;
+        Self::draw_box(ui, &self.highlight, 2, top, 27, top + 3);
+    }
+
+    /// Timing bar: grey track, green sweet spot, white cursor (pixels rewritten in place).
+    fn draw_bar(&mut self, ui: &mut RegularBackground, cursor: i32, sweet: &core::ops::RangeInclusive<i32>) {
+        for (tx, tile) in self.bar.iter_mut().enumerate() {
+            fill_tile(tile, |px, row| {
+                let x = tx as i32 * 8 + px as i32;
+                if row == 0 || row == 7 {
+                    1
+                } else if (cursor - 1..=cursor + 1).contains(&x) {
+                    4
+                } else if sweet.contains(&x) {
+                    3
+                } else {
+                    2
+                }
+            });
+        }
+        for (tx, tile) in self.bar.iter().enumerate() {
+            Self::put(ui, BAR_X / 8 + tx as i32, BAR_Y / 8, tile);
+        }
+    }
+
+    fn clear_bar(&self, ui: &mut RegularBackground) {
+        for tx in 0..BAR_W / 8 {
+            Self::put(ui, BAR_X / 8 + tx, BAR_Y / 8, &self.empty);
         }
     }
 }
@@ -522,6 +552,7 @@ fn main(mut gba: agb::Gba) -> ! {
         TileFormat::FourBpp,
     );
     draw_combat_bg(&mut arena);
+    let mut ui_tiles = UiTiles::new();
     let mut bar_visible = false;
     // UI layer: panels + timing bar share one background.
     let mut ui = RegularBackground::new(
@@ -615,10 +646,8 @@ fn main(mut gba: agb::Gba) -> ! {
                 }) {
                     let e = &room.enemies[i];
                     let _ = e;
-                    // Redraw the backdrop each time: room redraws can reuse its VRAM.
-                    draw_combat_bg(&mut arena);
-                    clear_ui(&mut ui);
-                    draw_panel(&mut ui, 0, 15, 29, 19);
+                    ui_tiles.clear(&mut ui);
+                    ui_tiles.panel(&mut ui, 0, 15, 29, 19);
                     title_text = Text::empty();
                     title_text = Text::new("TON TOUR", 96, 20);
                     combat_text = None;
@@ -727,9 +756,8 @@ fn main(mut gba: agb::Gba) -> ! {
                                         let options = pick_upgrades(&mut rng);
                                         menu = Text::empty();
                                         menu = upgrade_menu(&options, 0);
-                                        draw_combat_bg(&mut arena);
-                                        clear_ui(&mut ui);
-                                        draw_upgrade_panel(&mut ui, 0);
+                                        ui_tiles.clear(&mut ui);
+                                        ui_tiles.upgrade_panel(&mut ui, 0);
                                         mode = Mode::Upgrade { options, sel: 0 };
                                     } else {
                                         mode = Mode::Explore;
@@ -775,7 +803,7 @@ fn main(mut gba: agb::Gba) -> ! {
             if *sel != old {
                 menu = Text::empty();
                 menu = upgrade_menu(options, *sel);
-                draw_upgrade_panel(&mut ui, *sel);
+                ui_tiles.upgrade_panel(&mut ui, *sel);
             }
             if input.is_just_pressed(Button::A) {
                 apply_upgrade(options[*sel], &mut stats, &mut hero_hp);
@@ -872,11 +900,11 @@ fn main(mut gba: agb::Gba) -> ! {
                 }
                 match phase {
                     Phase::Aim { cursor } => {
-                        draw_bar(&mut ui, *cursor, &stats.sweet());
+                        ui_tiles.draw_bar(&mut ui, *cursor, &stats.sweet());
                         bar_visible = true;
                     }
                     _ if !matches!(phase, Phase::Aim { .. }) && bar_visible => {
-                        clear_bar(&mut ui);
+                        ui_tiles.clear_bar(&mut ui);
                         bar_visible = false;
                     }
                     Phase::EnemyAttack { t, .. } if stats.dodge().contains(t) => {
