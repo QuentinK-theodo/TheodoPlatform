@@ -64,6 +64,8 @@ static TEXT_PALETTE: &Palette16 = const {
 };
 
 const HERO_MAX_HP: i32 = 20;
+/// Intro card duration (~3 s), skippable with A.
+const INTRO_FRAMES: i32 = 180;
 
 // --- Text ----------------------------------------------------------------
 
@@ -239,8 +241,12 @@ fn draw_combat_bg(arena: &mut RegularBackground) {
 
 /// Shadow under a combat fighter's feet (shown after the fighter so it sits behind).
 fn show_shadow(frame: &mut GraphicsFrame, x: i32) {
+    show_shadow_at(frame, x, FIGHTER_Y + 26);
+}
+
+fn show_shadow_at(frame: &mut GraphicsFrame, x: i32, y: i32) {
     let mut s = Object::new(sprites::SHADOW.sprite(0));
-    s.set_pos((x, FIGHTER_Y + 26));
+    s.set_pos((x, y));
     s.show(frame);
 }
 
@@ -520,12 +526,35 @@ impl UiTiles {
 
 // --- Game -----------------------------------------------------------------
 
+/// Combat intro cards: (who you're fighting, the situation).
+const INTROS: &[(&str, &str)] = &[
+    ("Ton PM", "Ton PM te refile un ticket\nen fin de sprint !\nTrouve vite une excuse !"),
+    ("Le tech lead", "Ton tech lead refuse ta PR !\nExplique-lui ta facon de penser !"),
+    ("Le KAM", "Le KAM a promis la feature\nau client pour demain matin !\nDefends ton estimation !"),
+    ("Le LPM", "Le LPM veut re-chiffrer tout\nle backlog avant midi !\nNegocie un delai !"),
+    ("Un partner", "Un partner passe la tete :\n\"Tu as 5 minutes ?\"\nIl en faudra 50."),
+    ("Le client", "Le client demande pourquoi le\nbouton n'est pas \"plus bleu\".\nConvaincs-le !"),
+    ("Le client du client", "Le client de ton client a teste\nen prod... sur IE6.\nRassure-le !"),
+    ("Le PO", "Le PO a change les specs\npendant la daily !\nRecadre le scope !"),
+    ("Un dev senior", "Un dev senior relit ton code :\n\"Pourquoi pas en Rust ?\"\nArgumente !"),
+    ("Le coach agile", "Le coach agile organise une\nretro de la retro !\nSurvis a l'atelier post-it !"),
+    ("L'astreinte", "La prod tombe vendredi a 17h59 !\nTrouve le coupable\n(idealement, pas toi)."),
+    ("Le staffing", "Le staffing te propose une\nmission en COBOL de 3 ans !\nDecline poliment !"),
+    ("Le KAM", "Le KAM a vendu \"de l'IA\"\nau client. Personne ne sait\nlaquelle. Improvise !"),
+    ("Le partner", "Le partner veut une demo\n\"rapide\" devant le COMEX.\nC'est dans 10 minutes !"),
+];
+
 enum Mode {
     Explore,
+    /// Loading card before a fight ("Ton PM te refile un ticket !").
+    Intro { enemy: usize, timer: i32 },
     Combat { enemy: usize, phase: Phase },
     Upgrade { options: [usize; 3], sel: usize },
 }
 
+// Texts are reset to `Text::empty()` before being rebuilt on purpose: it frees
+// their sprite VRAM first (see `Text::empty`).
+#[allow(unused_assignments)]
 #[agb::entry]
 fn main(mut gba: agb::Gba) -> ! {
     let mut gfx = gba.graphics.get();
@@ -597,6 +626,7 @@ fn main(mut gba: agb::Gba) -> ! {
     let mut hud_dirty = true;
     let mut combat_text: Option<Text> = None;
     let alert = Text::new("!!", 62, 40);
+    let mut foe_name: &str = "";
     let mut heart = Object::new(sprites::ICON_HEART.sprite(0));
     heart.set_pos((2, -2));
     let mut title_text = Text::new("", 0, 0);
@@ -607,6 +637,22 @@ fn main(mut gba: agb::Gba) -> ! {
 
         match &mut mode {
             Mode::Upgrade { .. } => {} // handled below
+            Mode::Intro { enemy, timer } => {
+                *timer -= 1;
+                // Short lock so a held A from exploring doesn't skip the card instantly.
+                let skip = *timer < INTRO_FRAMES - 20 && input.is_just_pressed(Button::A);
+                if *timer <= 0 || skip {
+                    let enemy = *enemy;
+                    ui_tiles.clear(&mut ui);
+                    ui_tiles.panel(&mut ui, 0, 15, 29, 19);
+                    title_text = Text::empty();
+                    title_text = Text::new("TON TOUR", 96, 20);
+                    combat_text = None;
+                    combat_text = Some(Text::new(AIM_HELP, 8, 126));
+                    mode = Mode::Combat { enemy, phase: Phase::Aim { cursor: 0 } };
+                    hud_dirty = true;
+                }
+            }
             Mode::Explore => {
                 let (dx, dy) = (input.x_tri() as i32, input.y_tri() as i32);
                 if dx != 0 || dy != 0 {
@@ -644,18 +690,15 @@ fn main(mut gba: agb::Gba) -> ! {
                 if let Some(i) = room.enemies.iter().position(|e| {
                     (e.x - room.hero.0).abs() < 14 && (e.y - room.hero.1).abs() < 14
                 }) {
-                    let e = &room.enemies[i];
-                    let _ = e;
+                    let (who, line) = INTROS[rng.range(INTROS.len() as u32) as usize];
+                    foe_name = who;
                     ui_tiles.clear(&mut ui);
-                    ui_tiles.panel(&mut ui, 0, 15, 29, 19);
-                    title_text = Text::empty();
-                    title_text = Text::new("TON TOUR", 96, 20);
+                    ui_tiles.panel(&mut ui, 2, 4, 27, 15);
                     combat_text = None;
-                    combat_text = Some(Text::new(AIM_HELP, 8, 126));
-                    mode = Mode::Combat {
-                        enemy: i,
-                        phase: Phase::Aim { cursor: 0 },
-                    };
+                    combat_text = Some(Text::new(line, 28, 52));
+                    title_text = Text::empty();
+                    title_text = Text::new("A pour combattre", 72, 104);
+                    mode = Mode::Intro { enemy: i, timer: INTRO_FRAMES };
                     hud_dirty = true;
                 }
             }
@@ -826,9 +869,9 @@ fn main(mut gba: agb::Gba) -> ! {
             let extra = match &mode {
                 Mode::Combat { enemy, .. } => {
                     let e = &room.enemies[*enemy];
-                    format!("   {} PV {}", e.kind.name(), e.hp.max(0))
+                    format!("   {} PV {}", foe_name, e.hp.max(0))
                 }
-                Mode::Upgrade { .. } => String::new(),
+                Mode::Upgrade { .. } | Mode::Intro { .. } => String::new(),
                 Mode::Explore if room.idx == floor.exit && !room.door_open() => "  BOSS".into(),
                 Mode::Explore => String::new(),
             };
@@ -865,6 +908,20 @@ fn main(mut gba: agb::Gba) -> ! {
                 }
                 background.set_scroll_pos(cam);
                 background.show(&mut frame);
+            }
+            Mode::Intro { enemy, .. } => {
+                arena.show(&mut frame);
+                ui.show(&mut frame);
+                if let Some(t) = &combat_text {
+                    t.show(&mut frame);
+                }
+                if frame_count / 30 % 2 == 0 {
+                    title_text.show(&mut frame); // blinking "A pour combattre"
+                }
+                let mut o = Object::new(room.enemies[*enemy].kind.tag().animation_sprite(frame_count / 8));
+                o.set_pos((112, 128));
+                o.show(&mut frame);
+                show_shadow_at(&mut frame, 112, 154);
             }
             Mode::Upgrade { options, .. } => {
                 arena.show(&mut frame);
